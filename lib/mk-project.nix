@@ -203,7 +203,10 @@ let
           export IH_FLAKE_STYLE=${flakeStyle}
           export IH_DISK_NAME=${diskName}
           export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
-          exec ${frameworkSelf}/scripts/${name}.sh "$@"
+          # Invoke through bash explicitly: scripts copied into the store from git
+          # keep mode 0644 (non-executable), so exec'ing them directly fails with
+          # "Permission denied". bash <path> needs no executable bit.
+          exec ${pkgs.bash}/bin/bash ${frameworkSelf}/scripts/${name}.sh "$@"
         '';
       }
     );
