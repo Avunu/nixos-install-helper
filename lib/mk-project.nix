@@ -27,9 +27,15 @@ args@{
   deployedConfiguration ? null, # github:Owner/repo#attr (remote style)
   # Schema root override; null → auto-detect namespaces declared by the project.
   optionRoots ? null,
-  # disko --disk mapping. device "" → chosen interactively on a guided ISO.
+  # disko --disk mapping. diskDevice "" → auto-read from the install system's
+  # config.disko.devices.disk.<diskName>.device (or chosen interactively on a
+  # guided ISO if the module leaves it unset).
   diskName ? "main",
   diskDevice ? "",
+  # Import the framework lifecycle module (first-boot reconcile / autoUpgrade).
+  # Set false when the project already manages its own post-install upgrade
+  # (e.g. cocalico's LCServerCore initial-upgrade service).
+  lifecycle ? true,
   # Secret/key assets: [{ name; target; mode?; required?; source = {env|file|prompt}; }]
   assets ? [ ],
   # gum widget hints keyed by dotted settings path: "diskDevice" = "disk-device".
@@ -42,6 +48,9 @@ args@{
   specialArgs ? { },
   # ISO lightening passthroughs.
   dropZfs ? false,
+  # Extra NixOS modules merged into the installer ISO itself (e.g. a hardware
+  # kernel the installer must boot with).
+  isoModules ? [ ],
 }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -71,6 +80,7 @@ let
         {
           installHelper = {
             inherit flakeStyle upstream deployedConfiguration;
+            enable = lifecycle;
           };
         }
       ];
@@ -141,6 +151,15 @@ let
 
   schemaJson = pkgs.writeText "settings.schema.json" (builtins.toJSON settingsSchema);
 
+  # The install disk device: explicit arg wins; otherwise read it from the
+  # install system's disko config (so a module-fixed device — cocalico's PCI
+  # path — needs no duplication). Empty is fine for the guided ISO.
+  resolvedDiskDevice =
+    if diskDevice != "" then
+      diskDevice
+    else
+      (installSystem.config.disko.devices.disk.${diskName}.device or "");
+
   # Asset targets the boot scripts copy via --extra-files (no secret material).
   assetTargets = map (a: {
     inherit (a) name target;
@@ -183,7 +202,7 @@ let
         else
           "${frameworkSelf}/scripts/unattended-install.sh";
       embeddedAssets = embed;
-      inherit dropZfs;
+      inherit dropZfs isoModules;
     }).config.system.build.isoImage;
 
   # ── Apps (gum-driven; run from the project working tree) ───────────────────
@@ -226,7 +245,7 @@ in
       target = installSystem;
       mode = "unattended";
       embed = embeddedAssets;
-      device = diskDevice;
+      device = resolvedDiskDevice;
     };
     guidedIso = mkIso {
       target = templateSystem;

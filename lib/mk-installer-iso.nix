@@ -34,6 +34,9 @@
   # Extra store paths to force onto the ISO (guided: trivial-builder deps).
   extraClosurePaths ? [ ],
   extraSystemPackages ? [ ],
+  # Extra NixOS modules merged into the ISO system itself — e.g. a hardware
+  # kernel the installer must boot with (cocalico's strix-halo linuxPackages_6_18).
+  isoModules ? [ ],
   # Lightening toggles (router drops zfs; cocalico's install system is xfs-only).
   dropZfs ? false,
   dropDocs ? true,
@@ -50,6 +53,9 @@ nixpkgs.lib.nixosSystem {
   inherit system;
   modules = [
     "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
+  ]
+  ++ isoModules
+  ++ [
     (
       { pkgs, lib, ... }:
       {
