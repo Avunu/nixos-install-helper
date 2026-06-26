@@ -234,6 +234,15 @@ in
   };
 
   apps.${system} = {
+    # The single entrypoint: `nix run .#` / `nix run github:Owner/repo`.
+    default = mkApp "wizard" [
+      pkgs.gum
+      pkgs.jq
+      pkgs.nix
+      pkgs.util-linux
+      pkgs.iproute2
+      nixosAnywhere.packages.${system}.default
+    ];
     configure = mkApp "configure" [
       pkgs.gum
       pkgs.jq

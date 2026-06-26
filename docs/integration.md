@@ -52,10 +52,29 @@ in
 
 ## 3. Use it
 
+A single entrypoint drives everything — collect settings (if the project has any),
+then choose a deployment path:
+
 ```sh
-nix run .#configure   # gum questionnaire → installer/settings.json (skipped if no options)
-nix run .#install     # choose: unattended ISO | guided ISO | network install
-nix run .#deploy -- root@<ip>   # nixos-anywhere straight to a reachable target
+nix run                       # from a checkout: launches the wizard (.#default)
+nix run github:Owner/repo     # or straight from the published flake, no clone
+nix run . -- root@<ip>        # pre-seed the network-install target
+```
+
+Individual steps are also exposed if you want them directly:
+
+```sh
+nix run .#configure           # gum questionnaire → installer/settings.json (no-op if no options)
+nix run .#install             # choose: unattended ISO | guided ISO | network
+nix run .#deploy -- root@<ip> # nixos-anywhere straight to a reachable target
+```
+
+For an unattended ISO that embeds an env-sourced secret, export it first and the
+wizard builds `--impure` automatically:
+
+```sh
+export agenix__key="$(cat ~/.config/agenix/key)"
+nix run        # → Unattended ISO
 ```
 
 ## What makes an option technician-facing?
