@@ -153,7 +153,7 @@ nixpkgs.lib.nixosSystem {
             TTYPath = "/dev/tty1";
             TTYReset = true;
             TTYVHangup = true;
-            Type = "oneshot";
+            Type = "idle";
           };
         };
 
