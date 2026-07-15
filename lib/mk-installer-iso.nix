@@ -143,16 +143,31 @@ nixpkgs.lib.nixosSystem {
           # A systemd unit gets no system PATH — give the script every tool it
           # calls (jq, gum, disko-install, lsblk, coreutils, reboot, …).
           path = installerTools;
+          # A bare service inherits no TERM/locale (agetty/login would set them).
+          # gum/bubbletea need TERM for cursor addressing and a UTF-8 locale for
+          # its box-drawing glyphs — without these the menus render as garbage.
+          environment = {
+            TERM = "linux";
+            LANG = "C.UTF-8";
+            LC_ALL = "C.UTF-8";
+          };
           script = "${pkgs.bashInteractive}/bin/bash ${installScript}";
           serviceConfig = {
             Restart = "no";
-            StandardError = "journal+console";
+            # BOTH stdout and stderr must be the real tty. gum draws its UI on
+            # stderr (stdout carries the chosen value); routing stderr to
+            # journald makes it a pipe, so gum's isatty() fails and it renders
+            # corrupted. Log to /tmp/install-helper.log (the scripts tee there)
+            # instead of the journal so the interactive UI stays clean.
             StandardInput = "tty-force";
             StandardOutput = "tty";
+            StandardError = "tty";
             TTYPath = "/dev/tty1";
             TTYReset = true;
             TTYVHangup = true;
             Type = "idle";
+            # Keep kernel log spam from painting over the menus mid-render.
+            ExecStartPre = "-${pkgs.util-linux}/bin/dmesg --console-level 1";
           };
         };
 
