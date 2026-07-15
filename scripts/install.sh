@@ -41,13 +41,21 @@ case "$choice" in
         impure=(--impure)
         echo ":: env-sourced secrets detected — building --impure"
     fi
-    gum spin --title "Building unattended ISO…" -- \
-        nix build "${impure[@]}" "${FLAKE}#installerIso" --print-build-logs
+    # Foreground build with live logs — see the wizard.sh note: a spinner would
+    # hide an eval/assertion failure and make it look like a silent no-op.
+    gum style --foreground 212 "Building unattended ISO… (build logs below)"
+    if ! nix build "${impure[@]}" "${FLAKE}#installerIso" --print-build-logs; then
+        gum style --foreground 196 "Unattended ISO build FAILED — see the log above."
+        exit 1
+    fi
     show_iso
     ;;
   Guided*)
-    gum spin --title "Building guided ISO…" -- \
-        nix build "${FLAKE}#guidedIso" --print-build-logs
+    gum style --foreground 212 "Building guided ISO… (build logs below)"
+    if ! nix build "${FLAKE}#guidedIso" --print-build-logs; then
+        gum style --foreground 196 "Guided ISO build FAILED — see the log above."
+        exit 1
+    fi
     show_iso
     ;;
   Network*)

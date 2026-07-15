@@ -59,8 +59,14 @@ if [ "${allow_impure}" = "1" ]; then
     fi
 fi
 
-gum spin --title "Building ${attr}…" -- \
-    nix build "${impure[@]}" "${FLAKE}#${attr}" --print-build-logs
+# Build in the foreground with live logs — a `gum spin` wrapper here would hide
+# the build output, so an evaluation/assertion failure looks like a silent exit
+# ("no error, no ISO") instead of showing the actual cause.
+gum style --foreground 212 "Building ${attr}… (build logs below)"
+if ! nix build "${impure[@]}" "${FLAKE}#${attr}" --print-build-logs; then
+    gum style --foreground 196 "Build of ${attr} FAILED — see the log above for the cause."
+    exit 1
+fi
 
 iso=$(find -L result/iso -name '*.iso' 2>/dev/null | head -1)
 if [ -n "$iso" ]; then
