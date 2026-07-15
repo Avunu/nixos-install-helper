@@ -5,13 +5,17 @@ set -euo pipefail
 # ════════════════════════════════════════════════════════════════════════════
 
 FLAKE="${IH_FLAKE_REF:-.}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-flash.sh
+source "${SCRIPT_DIR}/lib-flash.sh"
 
 show_iso() {
     local iso
     iso=$(find -L result/iso -name '*.iso' 2>/dev/null | head -1)
     if [ -n "$iso" ]; then
         gum style --foreground 42 "ISO: $iso"
-        echo "  Flash:  sudo dd if=\"$iso\" of=/dev/sdX bs=4M status=progress conv=fsync"
+        flash_iso "$iso"
+        echo "  Flash manually:  sudo dd if=\"$iso\" of=/dev/sdX bs=4M status=progress conv=fsync"
     else
         echo "Build finished but no ISO found under ./result/iso" >&2
     fi

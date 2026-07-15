@@ -286,6 +286,7 @@ in
       pkgs.gum
       pkgs.jq
       pkgs.nix
+      pkgs.util-linux # lsblk for the USB-flash picker
     ];
     deploy = mkApp "deploy" [
       pkgs.gum

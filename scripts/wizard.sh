@@ -8,6 +8,8 @@ set -euo pipefail
 
 FLAKE="${IH_FLAKE_REF:-.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-flash.sh
+source "${SCRIPT_DIR}/lib-flash.sh"
 
 gum style --border double --padding "1 2" --border-foreground 212 \
     "nixos-install-helper" "Guided deployment wizard"
@@ -63,7 +65,8 @@ gum spin --title "Building ${attr}…" -- \
 iso=$(find -L result/iso -name '*.iso' 2>/dev/null | head -1)
 if [ -n "$iso" ]; then
     gum style --foreground 42 "ISO: $iso"
-    echo "  Flash:  sudo dd if=\"$iso\" of=/dev/sdX bs=4M status=progress conv=fsync"
+    flash_iso "$iso"
+    echo "  Flash manually:  sudo dd if=\"$iso\" of=/dev/sdX bs=4M status=progress conv=fsync"
     echo "  Or boot it directly in a VM to test the install."
 else
     echo "Build finished but no ISO was found under ./result/iso" >&2
