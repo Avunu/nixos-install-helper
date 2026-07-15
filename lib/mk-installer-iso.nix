@@ -145,7 +145,6 @@ nixpkgs.lib.nixosSystem {
           path = installerTools;
           script = "${pkgs.bashInteractive}/bin/bash ${installScript}";
           serviceConfig = {
-            RemainAfterExit = true;
             Restart = "no";
             StandardError = "journal+console";
             StandardInput = "tty-force";
