@@ -58,6 +58,28 @@ nixpkgs.lib.nixosSystem {
   ++ [
     (
       { pkgs, lib, ... }:
+      let
+        # Everything the boot install scripts (unattended-install.sh /
+        # guided-install.sh / lib-flash.sh) invoke. Shared between the system
+        # profile AND the install service's `path` — a systemd unit does NOT
+        # inherit /run/current-system/sw/bin, so without this the service fails
+        # with "jq: command not found" etc.
+        installerTools = [
+          disko.packages.${system}.default # disko + disko-install
+          pkgs.nixos-install-tools
+          pkgs.util-linux # lsblk, mount, umount
+          pkgs.efibootmgr
+          pkgs.less
+          pkgs.gum # interactive menus / prompts
+          pkgs.jq # manifest / schema / settings handling
+          pkgs.coreutils # tee, cut, mktemp, stat, seq, cp, chmod, sync, dd
+          pkgs.gawk # awk
+          pkgs.gnugrep
+          pkgs.gnused
+          pkgs.systemd # reboot / systemctl
+        ]
+        ++ extraSystemPackages;
+      in
       {
         environment.etc = lib.mkMerge (
           [
@@ -91,16 +113,7 @@ nixpkgs.lib.nixosSystem {
         nix.settings.substituters = lib.mkForce [ ];
         nix.settings.builders = lib.mkForce [ ];
 
-        environment.systemPackages = [
-          disko.packages.${system}.default # provides disko + disko-install
-          pkgs.nixos-install-tools
-          pkgs.util-linux
-          pkgs.efibootmgr
-          pkgs.less
-          pkgs.gum # interactive guided-install menus
-          pkgs.jq # schema/settings handling on the ISO
-        ]
-        ++ extraSystemPackages;
+        environment.systemPackages = installerTools;
 
         # ── Console: installer on tty1, kmscon debug shells on tty2…6 ─────────
         # kmscon gives the debug VTs real scrollback (Shift+PageUp). It normally
@@ -127,6 +140,9 @@ nixpkgs.lib.nixosSystem {
           after = [ "systemd-user-sessions.service" ];
           conflicts = [ "getty@tty1.service" ];
           restartIfChanged = false;
+          # A systemd unit gets no system PATH — give the script every tool it
+          # calls (jq, gum, disko-install, lsblk, coreutils, reboot, …).
+          path = installerTools;
           script = "${pkgs.bashInteractive}/bin/bash ${installScript}";
           serviceConfig = {
             RemainAfterExit = true;
