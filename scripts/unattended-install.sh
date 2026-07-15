@@ -15,6 +15,15 @@ FLAKE_DIR=/etc/installer-flake
 ASSET_DIR=/etc/installer-assets
 LOG=/tmp/install-helper.log
 
+# disko-install re-evaluates ${FLAKE_DIR}#install with --impure. The technician's
+# settings.json is NOT in the shipped flake (untracked files aren't in `self`), so
+# without this the re-eval would read empty settings and rebuild a DIFFERENT system
+# online. Point IH_SETTINGS_FILE at the settings baked alongside the ISO so the
+# re-eval reproduces the exact toplevel already in the offline closure.
+if [ -f /etc/installer-settings.json ]; then
+    export IH_SETTINGS_FILE=/etc/installer-settings.json
+fi
+
 HOST_ATTR=$(jq -r '.hostAttr' "$MANIFEST")
 DISK_NAME=$(jq -r '.diskName // "main"' "$MANIFEST")
 DISK_DEVICE=$(jq -r '.diskDevice // ""' "$MANIFEST")

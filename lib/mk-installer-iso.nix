@@ -31,6 +31,10 @@
   #   { name; source = <store path/file>; mode ? "0400"; }
   # copied to the target by the install script via --extra-files.
   embeddedAssets ? [ ],
+  # The exact settings JSON that produced `target` (unattended only). Shipped to
+  # /etc/installer-settings.json; unattended-install.sh points IH_SETTINGS_FILE at
+  # it so disko-install's impure re-eval reproduces the baked toplevel offline.
+  settingsJson ? null,
   # Extra store paths to force onto the ISO (guided: trivial-builder deps).
   extraClosurePaths ? [ ],
   extraSystemPackages ? [ ],
@@ -91,6 +95,11 @@ nixpkgs.lib.nixosSystem {
             # Manifest read by the boot scripts.
             { "installer-manifest.json".text = builtins.toJSON manifest; }
           ]
+          # The settings that baked `target`, so disko-install's impure re-eval
+          # (via IH_SETTINGS_FILE) reproduces the exact baked toplevel offline.
+          ++ lib.optional (settingsJson != null) {
+            "installer-settings.json".source = settingsJson;
+          }
           # Embed secret assets (unattended): each lands at
           # /etc/installer-assets/<name>; the script copies it with --extra-files.
           ++ map (a: {

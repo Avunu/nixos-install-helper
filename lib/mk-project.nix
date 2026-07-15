@@ -162,6 +162,13 @@ let
 
   schemaJson = pkgs.writeText "settings.schema.json" (builtins.toJSON settingsSchema);
 
+  # The EXACT settings that produced the baked per-host `installSystem`. Shipped
+  # onto the unattended ISO so disko-install's (impure) re-evaluation reads them
+  # back via IH_SETTINGS_FILE and reproduces the baked toplevel — instead of
+  # seeing an empty settings.json (untracked files aren't in the shipped flake)
+  # and rebuilding a divergent system online. Kept in sync with `settings`.
+  settingsValueJson = pkgs.writeText "installer-settings.json" (builtins.toJSON settings);
+
   # The install disk device: explicit arg wins; otherwise read it from the
   # install system's disko config (so a module-fixed device — cocalico's PCI
   # path — needs no duplication). Empty is fine for the guided ISO.
@@ -184,6 +191,7 @@ let
       mode,
       embed,
       device,
+      settingsJson ? null,
     }:
     (import ./mk-installer-iso.nix {
       inherit
@@ -192,6 +200,7 @@ let
         disko
         system
         target
+        settingsJson
         ;
       flakeSelf = self;
       manifest = {
@@ -257,6 +266,7 @@ in
       mode = "unattended";
       embed = embeddedAssets;
       device = resolvedDiskDevice;
+      settingsJson = settingsValueJson;
     };
     guidedIso = mkIso {
       target = templateSystem;
