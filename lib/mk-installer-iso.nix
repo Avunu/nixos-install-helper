@@ -127,16 +127,17 @@ nixpkgs.lib.nixosSystem {
           after = [ "systemd-user-sessions.service" ];
           conflicts = [ "getty@tty1.service" ];
           restartIfChanged = false;
+          script = "${pkgs.bashInteractive}/bin/bash ${installScript}";
           serviceConfig = {
-            Type = "idle";
+            RemainAfterExit = true;
+            Restart = "no";
+            StandardError = "journal+console";
             StandardInput = "tty-force";
             StandardOutput = "tty";
-            StandardError = "journal+console";
             TTYPath = "/dev/tty1";
             TTYReset = true;
             TTYVHangup = true;
-            ExecStart = "${pkgs.bashInteractive}/bin/bash ${installScript}";
-            Restart = "no";
+            Type = "oneshot";
           };
         };
 
