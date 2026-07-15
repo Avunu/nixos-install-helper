@@ -102,21 +102,43 @@ nixpkgs.lib.nixosSystem {
         ]
         ++ extraSystemPackages;
 
-        # ── kmscon console with real scrollback (Shift+PageUp) ────────────────
+        # ── Console: installer on tty1, kmscon debug shells on tty2…6 ─────────
+        # kmscon gives the debug VTs real scrollback (Shift+PageUp). It normally
+        # also claims tty1 (pulled into getty.target); we drop that pull-in and
+        # hand tty1 to a dedicated, discoverable install service instead.
         services.kmscon = {
           enable = true;
           config.sb-size = 50000;
         };
-        services.getty.autologinUser = lib.mkForce "root";
+        services.getty.autologinUser = lib.mkForce "root"; # debug VTs
 
-        # Launch the installer as the first console login (under kmscon, so its
-        # output scrolls). The run-once flag keeps later VTs as debug shells.
-        programs.bash.loginShellInit = ''
-          if [ ! -e /run/install-helper.started ]; then
-            : > /run/install-helper.started
-            exec ${pkgs.bashInteractive}/bin/bash ${installScript}
-          fi
-        '';
+        # Remove the kmscon `kmsconvt@tty1.service` pull-in so the install service
+        # can own tty1. kmscon still serves tty2…6 via its `autovt@` alias.
+        systemd.targets.getty.wants = lib.mkForce [ ];
+
+        # The installer as a real systemd unit — findable (`systemctl status
+        # nixos-install`), journal-logged (`journalctl -u nixos-install`), and
+        # robust (no dependency on login-shell profile sourcing). `tty-force`
+        # gives the script a controlling terminal so its Enter-countdown, gum
+        # prompts (guided), pager and debug shell (on failure) all work.
+        systemd.services.nixos-install = {
+          description = "nixos-install-helper: run the installer on boot";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "systemd-user-sessions.service" ];
+          conflicts = [ "getty@tty1.service" ];
+          restartIfChanged = false;
+          serviceConfig = {
+            Type = "idle";
+            StandardInput = "tty-force";
+            StandardOutput = "tty";
+            StandardError = "journal+console";
+            TTYPath = "/dev/tty1";
+            TTYReset = true;
+            TTYVHangup = true;
+            ExecStart = "${pkgs.bashInteractive}/bin/bash ${installScript}";
+            Restart = "no";
+          };
+        };
 
         # ── Lighten the installer image ───────────────────────────────────────
         boot.supportedFilesystems.zfs = lib.mkIf dropZfs (lib.mkForce false);

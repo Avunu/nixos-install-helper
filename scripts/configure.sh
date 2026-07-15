@@ -42,6 +42,11 @@ choose_iface() {
 }
 
 # Collect one value for a (sub)schema. Prints a JSON value.
+#
+# Interactive gum widgets read from the controlling terminal (</dev/tty) rather
+# than inherited stdin — otherwise, when collect_value runs inside collect_object's
+# key loop (or under the wizard, which may redirect stdin), a widget would drain
+# the caller's stdin and starve the loop.
 collect_value() {
     local schema="$1" name="$2"
     local t; t=$(prim_type "$schema")
@@ -53,40 +58,44 @@ collect_value() {
     case "$t" in
       object) collect_object "$schema" "${name}." ;;
       boolean)
-        if gum confirm "$header" --default="$(jq -r 'if .default==true then "true" else "false" end' <<<"$schema")"; then echo true; else echo false; fi ;;
+        if gum confirm "$header" --default="$(jq -r 'if .default==true then "true" else "false" end' <<<"$schema")" </dev/tty; then echo true; else echo false; fi ;;
       enum)
         local v; v=$(jq -r '.enum[]' <<<"$schema" | gum choose --header "$header")
         jq -n --arg v "$v" '$v' ;;
       integer|number)
         local d; d=$(jq -r '.default // "" | tostring' <<<"$schema")
-        local v; v=$(gum input --header "$header" --value "$d")
+        local v; v=$(gum input --header "$header" --value "$d" </dev/tty)
         if [ -z "$v" ]; then echo "${def:-null}"; else jq -n --argjson v "$v" '$v'; fi ;;
       array)
         # array of strings → one per line
-        local lines; lines=$(gum write --header "$header (one per line)")
+        local lines; lines=$(gum write --header "$header (one per line)" </dev/tty)
         if [ -z "$lines" ]; then echo '[]'; else jq -R -s 'split("\n") | map(select(length>0))' <<<"$lines"; fi ;;
       string|*)
         local v
         case "$hint" in
           disk-device) v=$(choose_disk "$header") ;;
           net-iface)   v=$(choose_iface "$header") ;;
-          *) local d; d=$(jq -r '.default // ""' <<<"$schema"); v=$(gum input --header "$header" --value "$d") ;;
+          *) local d; d=$(jq -r '.default // ""' <<<"$schema"); v=$(gum input --header "$header" --value "$d" </dev/tty) ;;
         esac
         if [ -z "$v" ]; then echo "${def:-\"\"}"; else jq -n --arg v "$v" '$v'; fi ;;
     esac
 }
 
-# Walk an object schema's properties, building a JSON object.
+# Walk an object schema's properties, building a JSON object. Keys are read into
+# an array first so the loop does NOT hold stdin — otherwise an interactive gum
+# widget in collect_value would consume the remaining keys and truncate the walk.
 collect_object() {
     local schema="$1" prefix="$2"
     local out='{}'
-    local keys; keys=$(jq -r '.properties // {} | keys[]' <<<"$schema" 2>/dev/null || true)
-    while IFS= read -r key; do
+    local keys=()
+    mapfile -t keys < <(jq -r '.properties // {} | keys[]' <<<"$schema" 2>/dev/null)
+    local key sub val
+    for key in "${keys[@]}"; do
         [ -z "$key" ] && continue
-        local sub; sub=$(jq -c --arg k "$key" '.properties[$k]' <<<"$schema")
-        local val; val=$(collect_value "$sub" "${prefix}${key}")
+        sub=$(jq -c --arg k "$key" '.properties[$k]' <<<"$schema")
+        val=$(collect_value "$sub" "${prefix}${key}")
         out=$(jq -c --arg k "$key" --argjson v "$val" '. + {($k): $v}' <<<"$out")
-    done <<<"$keys"
+    done
     echo "$out"
 }
 

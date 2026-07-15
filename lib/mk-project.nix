@@ -55,9 +55,20 @@ args@{
 let
   pkgs = nixpkgs.legacyPackages.${system};
 
+  # Settings source. `IH_SETTINGS_FILE` (an absolute path, set by the wizard when
+  # building --impure) wins over the tracked `settingsFile` — a flake only copies
+  # git-TRACKED files into `self`, so an untracked working-tree settings.json is
+  # invisible to a pure eval. Under a pure eval getEnv returns "" and behaviour is
+  # unchanged (read the tracked path, or {} if absent).
+  settingsFileResolved =
+    let
+      envFile = builtins.getEnv "IH_SETTINGS_FILE";
+    in
+    if envFile != "" then envFile else settingsFile;
+
   settings =
-    if settingsFile != null && builtins.pathExists settingsFile then
-      builtins.fromJSON (builtins.readFile settingsFile)
+    if settingsFileResolved != null && builtins.pathExists settingsFileResolved then
+      builtins.fromJSON (builtins.readFile settingsFileResolved)
     else
       { };
 

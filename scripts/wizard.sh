@@ -41,11 +41,20 @@ case "$choice" in
     echo "Nothing selected."; exit 1 ;;
 esac
 
-# Secrets sourced from env vars require an impure build (builtins.getEnv).
+# Impure build triggers (builtins.getEnv): env-sourced secrets, and the untracked
+# settings.json (flakes ignore untracked files, so it must be injected by path).
 impure=()
-if [ "${allow_impure}" = "1" ] && jq -e 'any(.[]; .source.env != null)' "${IH_ASSETS:-/dev/null}" >/dev/null 2>&1; then
-    impure=(--impure)
-    echo ":: env-sourced secrets detected — building --impure"
+if [ "${allow_impure}" = "1" ]; then
+    if [ -f "installer/settings.json" ]; then
+        impure=(--impure)
+        IH_SETTINGS_FILE="$(realpath installer/settings.json)"
+        export IH_SETTINGS_FILE
+        echo ":: seeding installer/settings.json into the build (--impure)"
+    fi
+    if jq -e 'any(.[]; .source.env != null)' "${IH_ASSETS:-/dev/null}" >/dev/null 2>&1; then
+        impure=(--impure)
+        echo ":: env-sourced secrets detected — building --impure"
+    fi
 fi
 
 gum spin --title "Building ${attr}…" -- \
