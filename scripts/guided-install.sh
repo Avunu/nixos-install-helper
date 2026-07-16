@@ -58,11 +58,10 @@ gum confirm "Proceed with the install? This WIPES ${DISK_DEVICE}." || { echo "Ab
 efi_args=()
 [ -d /sys/firmware/efi ] && efi_args+=(--write-efi-boot-entries)
 
-# ── Seed: whole flake + settings overlay so reconcile applies identity ───────
+# ── Seed: synthesized local flake + chosen identity so first boot applies it ──
+# The synthesized /etc/nixos/flake.nix reads ./settings.json; write the chosen
+# hostName nested under the project's primary option root (only closure-safe keys).
 SETTINGS=$(mktemp)
-# Identity settings are merged onto the seeded settings.json the local flake
-# reads (installer/settings.json), nested under the project's primary option
-# root. Only closure-safe keys here.
 PRIMARY_ROOT=$(jq -r '.primaryRoot // ""' "$MANIFEST")
 if [ -n "$PRIMARY_ROOT" ]; then
     jq -n --arg r "$PRIMARY_ROOT" --arg h "$HOSTNAME" '{ ($r): { hostName: $h } }' > "$SETTINGS"
@@ -70,9 +69,13 @@ else
     jq -n --arg h "$HOSTNAME" '{ hostName: $h }' > "$SETTINGS"
 fi
 
-if [ "$FLAKE_STYLE" = "local" ]; then
-    extra_args+=(--extra-files "${FLAKE_DIR}/" "etc/nixos")
-    extra_args+=(--extra-files "$SETTINGS" "etc/nixos/installer/settings.json")
+if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
+    extra_args+=(--extra-files /etc/installer-local-flake/flake.nix "etc/nixos/flake.nix")
+    extra_args+=(--extra-files "$SETTINGS" "etc/nixos/settings.json")
+    # The guided template boots with a generic identity; drop a marker so the
+    # first-boot reconcile rebuilds /etc/nixos#default and applies the chosen host.
+    MARKER=$(mktemp)
+    extra_args+=(--extra-files "$MARKER" "etc/nixos/.first-boot-reconcile")
 fi
 
 echo ":: Installing template offline…"

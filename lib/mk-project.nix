@@ -169,6 +169,59 @@ let
   # and rebuilding a divergent system online. Kept in sync with `settings`.
   settingsValueJson = pkgs.writeText "installer-settings.json" (builtins.toJSON settings);
 
+  # ── Synthesized local flake (flakeStyle == "local") ─────────────────────────
+  # For local style, /etc/nixos gets a MINIMAL flake that imports the module(s)
+  # from the upstream project (github) and reads the technician's settings.json —
+  # NOT a copy of the whole project source (which is what the boot scripts used
+  # to seed). The install scripts drop this file + settings.json onto the target.
+  #
+  # Module names are derived from the option roots the project also exports as
+  # `nixosModules.<root>` (devWorkstation → nixosModules.devWorkstation). This
+  # ignores inline installModules entries (e.g. router's `{ router.cockpit... }`).
+  localModuleNames =
+    let
+      fromRoots = lib.filter (n: self.nixosModules ? ${n}) resolvedRoots;
+    in
+    if fromRoots != [ ] then fromRoots else [ "default" ];
+
+  # Built lazily: null unless local style with an upstream, so it never evaluates
+  # for remote projects (cocalico) or when there is nothing to reference.
+  localFlakeNix =
+    if flakeStyle == "local" && upstream != null then
+      pkgs.writeText "flake.nix" ''
+        {
+          inputs = {
+            nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+            project.url = "${upstream}";
+            project.inputs.nixpkgs.follows = "nixpkgs";
+          };
+          outputs =
+            { self, nixpkgs, project }:
+            let
+              settings = builtins.fromJSON (builtins.readFile ./settings.json);
+              host = nixpkgs.lib.nixosSystem {
+                system = "${system}";
+                modules = [
+        ${lib.concatMapStringsSep "\n" (m: "          project.nixosModules.${m}") localModuleNames}
+                  { config = builtins.mapAttrs (_: nixpkgs.lib.mkDefault) settings; }
+                ];
+              };
+            in
+            {
+              # Keyed by the EVALUATED hostname so a bare
+              # `nixos-rebuild switch --flake /etc/nixos` matches the running host;
+              # `default` is a stable alias the first-boot reconcile targets before
+              # a guided-chosen hostname has taken effect.
+              nixosConfigurations = {
+                "''${host.config.networking.hostName}" = host;
+                default = host;
+              };
+            };
+        }
+      ''
+    else
+      null;
+
   # The install disk device: explicit arg wins; otherwise read it from the
   # install system's disko config (so a module-fixed device — cocalico's PCI
   # path — needs no duplication). Empty is fine for the guided ISO.
@@ -192,6 +245,7 @@ let
       embed,
       device,
       settingsJson ? null,
+      localFlakeNix ? null,
     }:
     (import ./mk-installer-iso.nix {
       inherit
@@ -201,6 +255,7 @@ let
         system
         target
         settingsJson
+        localFlakeNix
         ;
       flakeSelf = self;
       manifest = {
@@ -252,7 +307,9 @@ let
   };
 in
 {
-  inherit settingsSchema resolvedRoots;
+  # `localFlakeNix` (null for remote) is exposed for inspection/tests — it is the
+  # synthesized /etc/nixos flake the local-style installer seeds onto the target.
+  inherit settingsSchema resolvedRoots localFlakeNix;
 
   nixosConfigurations = {
     install = installSystem;
@@ -267,12 +324,14 @@ in
       embed = embeddedAssets;
       device = resolvedDiskDevice;
       settingsJson = settingsValueJson;
+      inherit localFlakeNix;
     };
     guidedIso = mkIso {
       target = templateSystem;
       mode = "guided";
       embed = [ ];
       device = "";
+      inherit localFlakeNix;
     };
   };
 

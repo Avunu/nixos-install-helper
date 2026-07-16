@@ -54,8 +54,17 @@ in
     };
     reconcile = lib.mkOption {
       type = lib.types.bool;
-      default = cfg.flakeStyle == "local";
-      description = "Run a first-boot reconcile against the seeded /etc/nixos flake.";
+      default = false;
+      description = ''
+        Opt-in first-boot reconcile (local style): rebuild the seeded
+        /etc/nixos flake once on first boot. Default off — for a normal local
+        install the baked system is already complete and agenix secrets activate
+        at boot without a rebuild. Turn on for a STAGED local install (a minimal
+        `installModules` baked offline, the full module imported by the
+        synthesized /etc/nixos flake). A guided install triggers the same
+        reconcile via an `/etc/nixos/.first-boot-reconcile` marker regardless of
+        this option, to apply the identity chosen on the box.
+      '';
     };
   };
 
@@ -101,12 +110,17 @@ in
         };
       })
 
-      # ── local: first-boot reconcile against seeded /etc/nixos ───────────────
-      (lib.mkIf (cfg.flakeStyle == "local" && cfg.reconcile) {
+      # ── local: opt-in / guided first-boot reconcile of seeded /etc/nixos ────
+      # The service ships on every local install but is a no-op unless it is opted
+      # in at build time (`reconcile = true`, for staged-local) OR a guided install
+      # dropped the /etc/nixos/.first-boot-reconcile marker (to apply the chosen
+      # identity). It rebuilds the synthesized flake's stable `#default` attr.
+      (lib.mkIf (cfg.flakeStyle == "local") {
         systemd.services.install-helper-reconcile = {
           description = "Install-helper: first-boot reconcile of the seeded /etc/nixos config";
           wantedBy = [ "multi-user.target" ];
-          after = [ "network.target" ];
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
           unitConfig.ConditionPathExists = [
             "!${stampDir}/reconcile.done"
             "/etc/nixos/flake.nix"
@@ -123,14 +137,21 @@ in
           script = ''
             set -euo pipefail
             mkdir -p ${stampDir}
-            echo ":: install-helper: reconciling /etc/nixos#install"
-            # Trivial identity diffs (hostname/users/network) build offline from
-            # the baked closure; falls back to substituters only if reachable.
-            if nixos-rebuild switch --flake "/etc/nixos#install"; then
+            # Only reconcile when opted in at build time, or when a guided install
+            # asked for it via the marker. Otherwise the baked system is final.
+            if [ "${lib.boolToString cfg.reconcile}" != "true" ] \
+                && [ ! -e /etc/nixos/.first-boot-reconcile ]; then
+              echo ":: install-helper: reconcile not requested; baked system is final"
+              touch ${stampDir}/reconcile.done
+              exit 0
+            fi
+            echo ":: install-helper: reconciling /etc/nixos#default"
+            if nixos-rebuild switch --flake "/etc/nixos#default"; then
+              rm -f /etc/nixos/.first-boot-reconcile
               touch ${stampDir}/reconcile.done
               echo ":: install-helper: reconcile complete"
             else
-              echo "!! install-helper: reconcile failed; leaving template active" >&2
+              echo "!! install-helper: reconcile failed; leaving baked system active" >&2
               exit 1
             fi
           '';

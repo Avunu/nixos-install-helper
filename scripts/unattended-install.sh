@@ -109,13 +109,15 @@ while IFS=$'\t' read -r name target; do
     fi
 done < <(jq -r '.assets[]? | select(.embedded) | [.name, .target] | @tsv' "$MANIFEST")
 
-# Seed /etc/nixos (local style) so the installed host can nixos-rebuild later.
-if [ "$FLAKE_STYLE" = "local" ]; then
-    for f in flake.nix flake.lock; do
-        if [ -e "${FLAKE_DIR}/${f}" ]; then
-            extra_args+=(--extra-files "${FLAKE_DIR}/${f}" "etc/nixos/${f}")
-        fi
-    done
+# Seed /etc/nixos (local style) with the SYNTHESIZED minimal flake — it imports the
+# module from the upstream project (github) and reads settings.json — rather than a
+# verbatim copy of the whole project source. No first-boot reconcile marker: the
+# baked system is already complete (agenix secrets activate at boot regardless).
+if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
+    extra_args+=(--extra-files /etc/installer-local-flake/flake.nix "etc/nixos/flake.nix")
+    if [ -f /etc/installer-settings.json ]; then
+        extra_args+=(--extra-files /etc/installer-settings.json "etc/nixos/settings.json")
+    fi
 fi
 
 echo ":: Starting disko-install (offline)…"

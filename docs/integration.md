@@ -110,12 +110,33 @@ evaluation, and the ISO would silently bake option defaults.) If you build
 `.#installerIso` directly (bypassing the wizard), either commit the file or set
 `IH_SETTINGS_FILE=$PWD/installer/settings.json` and pass `--impure` yourself.
 
-- **local** — the seeded `/etc/nixos` flake reconciles on first boot (this is how
-  a *guided* install applies the host identity that wasn't baked into the offline
-  template). Ongoing updates: `nixos-rebuild switch --flake /etc/nixos#install`.
+- **local** — the installer seeds `/etc/nixos` with a **synthesized minimal flake**
+  (`flake.nix` + `settings.json`), *not* a copy of your project. The flake pulls the
+  module from `upstream` (github) and reads `settings.json`:
+
+  ```nix
+  inputs.project.url = "github:Owner/repo";          # = your `upstream`
+  # nixosConfigurations."${host.config.networking.hostName}" = host;  (+ `default` alias)
+  # modules = [ project.nixosModules.<root> { config = mapAttrs mkDefault settings; } ];
+  ```
+
+  The imported module names are derived from your `optionRoots` (each root that the
+  project also exports as `nixosModules.<root>`). Ongoing updates just track
+  upstream: `nixos-rebuild switch --flake /etc/nixos` (bare — resolves by hostname).
+
+  For a normal local install the **baked system is already complete**, so there is
+  **no first-boot rebuild** (agenix secrets activate at boot). Two cases do rebuild
+  once on first boot against the seeded flake's `#default`:
+  - **guided** — always, to apply the identity chosen on the box (via an
+    `/etc/nixos/.first-boot-reconcile` marker the guided installer drops);
+  - **staged local** — when you set `installHelper.reconcile = true`: bake a minimal
+    `installModules` offline, let the synthesized flake import the full module, and
+    the reconcile applies the full config (with live secrets) on first boot.
 - **remote** — first boot pulls `deployedConfiguration` and switches once, then
-  `system.autoUpgrade` keeps it current. Use this for single-purpose, settled
-  configs (no `settings.json`).
+  `system.autoUpgrade` keeps it current. This is the path for **staged
+  module-separation** (install a minimal `installModules` offline, then switch to the
+  full production config with live secrets/disks) — e.g. cocalico, which sets
+  `lifecycle = false` and owns the first-boot switch itself. No `settings.json`.
 
 ## Deployment paths
 

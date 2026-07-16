@@ -35,6 +35,10 @@
   # /etc/installer-settings.json; unattended-install.sh points IH_SETTINGS_FILE at
   # it so disko-install's impure re-eval reproduces the baked toplevel offline.
   settingsJson ? null,
+  # Synthesized minimal local flake.nix (local flakeStyle). Shipped to
+  # /etc/installer-local-flake/flake.nix; the install scripts seed it (with
+  # settings.json) into /etc/nixos instead of copying the whole project flake.
+  localFlakeNix ? null,
   # Extra store paths to force onto the ISO (guided: trivial-builder deps).
   extraClosurePaths ? [ ],
   extraSystemPackages ? [ ],
@@ -99,6 +103,10 @@ nixpkgs.lib.nixosSystem {
           # (via IH_SETTINGS_FILE) reproduces the exact baked toplevel offline.
           ++ lib.optional (settingsJson != null) {
             "installer-settings.json".source = settingsJson;
+          }
+          # Synthesized local flake seeded into /etc/nixos by the install scripts.
+          ++ lib.optional (localFlakeNix != null) {
+            "installer-local-flake/flake.nix".source = localFlakeNix;
           }
           # Embed secret assets (unattended): each lands at
           # /etc/installer-assets/<name>; the script copies it with --extra-files.
