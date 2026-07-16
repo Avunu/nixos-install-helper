@@ -42,9 +42,18 @@ args@{
   hints ? { },
   # Settings that change the closure → locked to template defaults on guided ISO.
   closureAffecting ? [ ],
-  # Path to the technician-authored settings value file (when the schema is
-  # non-empty). Absent → install systems use option defaults.
-  settingsFile ? (self + "/installer/settings.json"),
+  # Technician-authored FLAT per-root settings files, keyed by option root:
+  #   settingsFiles.router = ./local/router-settings.json
+  # Each file holds that root's option VALUES at top level (no `<root>` wrapper) and
+  # is applied as `{ <root> = mkDefault <flat> }`. Unset roots fall back to
+  # `self + "/installer/<root>-settings.json"`. Absent files → option defaults.
+  settingsFiles ? { },
+  # Dotted sub-paths, relative to each option root, to DROP from the derived schema
+  # (e.g. "cockpit" → router.cockpit.* stays Nix-locked, never in the JSON/UI).
+  schemaExclude ? [ ],
+  # When false, no guided (generic template) ISO is built and the wizard/install
+  # menus hide the guided path. The per-host unattended ISO + network deploy remain.
+  guided ? true,
   specialArgs ? { },
   # ISO lightening passthroughs.
   dropZfs ? false,
@@ -54,23 +63,6 @@ args@{
 }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
-
-  # Settings source. `IH_SETTINGS_FILE` (an absolute path, set by the wizard when
-  # building --impure) wins over the tracked `settingsFile` — a flake only copies
-  # git-TRACKED files into `self`, so an untracked working-tree settings.json is
-  # invisible to a pure eval. Under a pure eval getEnv returns "" and behaviour is
-  # unchanged (read the tracked path, or {} if absent).
-  settingsFileResolved =
-    let
-      envFile = builtins.getEnv "IH_SETTINGS_FILE";
-    in
-    if envFile != "" then envFile else settingsFile;
-
-  settings =
-    if settingsFileResolved != null && builtins.pathExists settingsFileResolved then
-      builtins.fromJSON (builtins.readFile settingsFileResolved)
-    else
-      { };
 
   # Apply a settings attrset (keyed by option root) as module defaults, mirroring
   # nixos-router's `{ router = mkDefault settings; }`.
@@ -97,8 +89,8 @@ let
       ];
     };
 
-  # Per-host (unattended) and template (guided) install systems.
-  installSystem = mkInstallSystem settings;
+  # Template (settings-free) system — evaluated FIRST so roots are known before we
+  # read the per-root settings files.
   templateSystem = mkInstallSystem { };
 
   # ── Auto-detect technician-facing roots ────────────────────────────────────
@@ -131,12 +123,83 @@ let
   ) (builtins.attrNames projOptions);
   resolvedRoots = if optionRoots != null then optionRoots else detectedRoots;
 
-  settingsSchema = import ./options-to-schema.nix {
+  # ── Per-root settings (FLAT files) ─────────────────────────────────────────
+  # Each root's file holds that root's option VALUES at top level. `IH_SETTINGS_DIR`
+  # (a directory of `<root>-settings.json`, set by the wizard when building --impure)
+  # wins over the tracked path — a flake only copies git-TRACKED files into `self`,
+  # so an untracked working-tree file is invisible to a pure eval. Under a pure eval
+  # getEnv returns "" and behaviour is unchanged (read the tracked path, or {}).
+  settingsForRoot =
+    root:
+    let
+      dir = builtins.getEnv "IH_SETTINGS_DIR";
+      f =
+        if dir != "" then
+          "${dir}/${root}-settings.json"
+        else
+          settingsFiles.${root} or (self + "/installer/${root}-settings.json");
+    in
+    if f != null && builtins.pathExists f then builtins.fromJSON (builtins.readFile f) else { };
+
+  # Nested { <root> = <flat values>; } used to build the baked install system.
+  settings = lib.genAttrs resolvedRoots settingsForRoot;
+
+  # Per-host (unattended) install system, with the technician's settings baked in.
+  installSystem = mkInstallSystem settings;
+
+  fullSchema = import ./options-to-schema.nix {
     inherit lib;
     options = projOptions;
     optionRoots = resolvedRoots;
   };
-  schemaHasProps = (settingsSchema.properties or { }) != { };
+
+  # ── Per-root FLAT schema (+ schemaExclude) ─────────────────────────────────
+  # Promote a root's sub-option tree to the document root and drop excluded dotted
+  # sub-paths (relative to the root). Matches nixos-router's committed
+  # <root>-settings.schema.json (no <root> wrapper, no cockpit).
+  dropSchemaPath =
+    schema: parts:
+    if parts == [ ] then
+      schema
+    else
+      let
+        head = builtins.head parts;
+        rest = builtins.tail parts;
+        props = schema.properties or { };
+      in
+      if !(props ? ${head}) then
+        schema
+      else if rest == [ ] then
+        schema // { properties = builtins.removeAttrs props [ head ]; }
+      else
+        schema
+        // {
+          properties = props // {
+            ${head} = dropSchemaPath props.${head} rest;
+          };
+        };
+
+  perRootSchema =
+    root:
+    let
+      base =
+        fullSchema.properties.${root} or {
+          type = "object";
+          additionalProperties = false;
+          properties = { };
+        };
+      pruned = lib.foldl' (s: p: dropSchemaPath s (lib.splitString "." p)) base schemaExclude;
+    in
+    pruned // { "$schema" = "http://json-schema.org/draft-07/schema#"; };
+
+  # Nested schema rebuilt from the pruned per-root schemas (back-compat export).
+  settingsSchema = {
+    "$schema" = "http://json-schema.org/draft-07/schema#";
+    type = "object";
+    additionalProperties = false;
+    properties = lib.genAttrs resolvedRoots (r: builtins.removeAttrs (perRootSchema r) [ "$schema" ]);
+  };
+  schemaHasProps = (settingsSchema.properties or { }) != { } && resolvedRoots != [ ];
 
   # ── Resolve assets embeddable at build time (env/file sources) ─────────────
   resolveAsset =
@@ -162,18 +225,26 @@ let
 
   schemaJson = pkgs.writeText "settings.schema.json" (builtins.toJSON settingsSchema);
 
-  # The EXACT settings that produced the baked per-host `installSystem`. Shipped
-  # onto the unattended ISO so disko-install's (impure) re-evaluation reads them
-  # back via IH_SETTINGS_FILE and reproduces the baked toplevel — instead of
-  # seeing an empty settings.json (untracked files aren't in the shipped flake)
-  # and rebuilding a divergent system online. Kept in sync with `settings`.
-  settingsValueJson = pkgs.writeText "installer-settings.json" (builtins.toJSON settings);
+  # The EXACT per-root settings that produced the baked `installSystem`, as a DIR of
+  # flat `<root>-settings.json` files. Shipped onto the unattended ISO so
+  # disko-install's (impure) re-evaluation reads them back via IH_SETTINGS_DIR and
+  # reproduces the baked toplevel — instead of seeing empty settings (untracked files
+  # aren't in the shipped flake) and rebuilding a divergent system online. It is also
+  # what the boot scripts seed into /etc/nixos. Kept in sync with `settings`.
+  settingsDir = pkgs.runCommand "installer-settings" { } ''
+    mkdir -p "$out"
+    ${lib.concatMapStringsSep "\n" (
+      r:
+      ''cp ${pkgs.writeText "${r}-settings.json" (builtins.toJSON (settingsForRoot r))} "$out/${r}-settings.json"''
+    ) resolvedRoots}
+  '';
 
   # ── Synthesized local flake (flakeStyle == "local") ─────────────────────────
-  # For local style, /etc/nixos gets a MINIMAL flake that imports the module(s)
-  # from the upstream project (github) and reads the technician's settings.json —
-  # NOT a copy of the whole project source (which is what the boot scripts used
-  # to seed). The install scripts drop this file + settings.json onto the target.
+  # For local style, /etc/nixos gets a MINIMAL flake that imports the module(s) from
+  # the upstream project (github) and reads FLAT per-root <root>-settings.json files —
+  # NOT a copy of the whole project source. Each root's JSON is applied SCOPED under
+  # `{ <root> = mkDefault <flat> }`, so a Cockpit user editing the file can only touch
+  # that root's typed options (the security boundary), never arbitrary system config.
   #
   # Module names are derived from the option roots the project also exports as
   # `nixosModules.<root>` (devWorkstation → nixosModules.devWorkstation). This
@@ -198,12 +269,16 @@ let
           outputs =
             { self, nixpkgs, project }:
             let
-              settings = builtins.fromJSON (builtins.readFile ./settings.json);
+              load =
+                root:
+                builtins.mapAttrs (_: nixpkgs.lib.mkDefault) (
+                  builtins.fromJSON (builtins.readFile (./. + "/''${root}-settings.json"))
+                );
               host = nixpkgs.lib.nixosSystem {
                 system = "${system}";
                 modules = [
         ${lib.concatMapStringsSep "\n" (m: "          project.nixosModules.${m}") localModuleNames}
-                  { config = builtins.mapAttrs (_: nixpkgs.lib.mkDefault) settings; }
+        ${lib.concatMapStringsSep "\n" (r: "          { ${r} = load \"${r}\"; }") resolvedRoots}
                 ];
               };
             in
@@ -244,7 +319,7 @@ let
       mode,
       embed,
       device,
-      settingsJson ? null,
+      settingsDir ? null,
       localFlakeNix ? null,
     }:
     (import ./mk-installer-iso.nix {
@@ -254,7 +329,7 @@ let
         disko
         system
         target
-        settingsJson
+        settingsDir
         localFlakeNix
         ;
       flakeSelf = self;
@@ -269,6 +344,7 @@ let
         diskName = diskName;
         diskDevice = device;
         assets = assetTargets;
+        roots = resolvedRoots;
         primaryRoot = if resolvedRoots == [ ] then null else builtins.head resolvedRoots;
       };
       installScript =
@@ -297,6 +373,7 @@ let
           export IH_FLAKE_STYLE=${flakeStyle}
           export IH_DISK_NAME=${diskName}
           export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
+          export IH_GUIDED=${if guided then "1" else "0"}
           # Invoke through bash explicitly: scripts copied into the store from git
           # keep mode 0644 (non-executable), so exec'ing them directly fails with
           # "Permission denied". bash <path> needs no executable bit.
@@ -317,21 +394,33 @@ in
   };
 
   packages.${system} = {
+    # Nested union schema (back-compat).
     settingsSchema = schemaJson;
     installerIso = mkIso {
       target = installSystem;
       mode = "unattended";
       embed = embeddedAssets;
       device = resolvedDiskDevice;
-      settingsJson = settingsValueJson;
-      inherit localFlakeNix;
+      inherit settingsDir localFlakeNix;
     };
+  }
+  # Per-root FLAT schema packages: `settingsSchema-<root>` (e.g. what
+  # nixos-router's Cockpit build diffs its committed router-settings.schema.json
+  # against).
+  // lib.listToAttrs (
+    map (r: {
+      name = "settingsSchema-${r}";
+      value = pkgs.writeText "${r}-settings.schema.json" (builtins.toJSON (perRootSchema r));
+    }) resolvedRoots
+  )
+  # Guided (generic template) ISO — omitted entirely when `guided = false`.
+  // lib.optionalAttrs guided {
     guidedIso = mkIso {
       target = templateSystem;
       mode = "guided";
       embed = [ ];
       device = "";
-      inherit localFlakeNix;
+      inherit settingsDir localFlakeNix;
     };
   };
 

@@ -31,10 +31,11 @@
   #   { name; source = <store path/file>; mode ? "0400"; }
   # copied to the target by the install script via --extra-files.
   embeddedAssets ? [ ],
-  # The exact settings JSON that produced `target` (unattended only). Shipped to
-  # /etc/installer-settings.json; unattended-install.sh points IH_SETTINGS_FILE at
-  # it so disko-install's impure re-eval reproduces the baked toplevel offline.
-  settingsJson ? null,
+  # The exact per-root settings that produced `target`, as a DIR of flat
+  # `<root>-settings.json` files. Shipped to /etc/installer-settings/;
+  # unattended-install.sh points IH_SETTINGS_DIR at it so disko-install's impure
+  # re-eval reproduces the baked toplevel offline, and seeds the files into /etc/nixos.
+  settingsDir ? null,
   # Synthesized minimal local flake.nix (local flakeStyle). Shipped to
   # /etc/installer-local-flake/flake.nix; the install scripts seed it (with
   # settings.json) into /etc/nixos instead of copying the whole project flake.
@@ -99,10 +100,11 @@ nixpkgs.lib.nixosSystem {
             # Manifest read by the boot scripts.
             { "installer-manifest.json".text = builtins.toJSON manifest; }
           ]
-          # The settings that baked `target`, so disko-install's impure re-eval
-          # (via IH_SETTINGS_FILE) reproduces the exact baked toplevel offline.
-          ++ lib.optional (settingsJson != null) {
-            "installer-settings.json".source = settingsJson;
+          # The per-root settings that baked `target` (a dir of flat
+          # <root>-settings.json), so disko-install's impure re-eval (via
+          # IH_SETTINGS_DIR) reproduces the exact baked toplevel offline.
+          ++ lib.optional (settingsDir != null) {
+            "installer-settings".source = settingsDir;
           }
           # Synthesized local flake seeded into /etc/nixos by the install scripts.
           ++ lib.optional (localFlakeNix != null) {

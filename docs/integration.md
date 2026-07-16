@@ -41,14 +41,41 @@ let
 
     # Optional: richer gum widgets for specific settings paths.
     hints = { "diskDevice" = "disk-device"; "wan.interface" = "net-iface"; };
+
+    # Optional: FLAT per-root settings files (keyed by option root). Defaults to
+    # installer/<root>-settings.json. Each file holds that root's option VALUES at
+    # top level (no <root> wrapper) and is applied as `{ <root> = mkDefault … }`.
+    settingsFiles.router = ./local/router-settings.json;
+
+    # Optional: drop sub-paths (relative to each root) from the derived schema —
+    # e.g. keep router.cockpit.* Nix-locked, out of the JSON/UI.
+    schemaExclude = [ "cockpit" ];
+
+    # Optional: set false to skip the guided (generic template) ISO entirely.
+    guided = true;
   };
 in
 {
   nixosConfigurations = ih.nixosConfigurations;   # install, installTemplate
-  packages.${system}  = ih.packages.${system};    # settingsSchema, installerIso, guidedIso
+  packages.${system}  = ih.packages.${system};    # settingsSchema, settingsSchema-<root>, installerIso, guidedIso
   apps.${system}      = ih.apps.${system};         # configure, install, deploy
 }
 ```
+
+## Settings: flat per-root JSON
+
+For each technician-facing option root, the framework reads a **flat** JSON file —
+`installer/<root>-settings.json` by default, or the path you give in
+`settingsFiles.<root>` — whose keys are that root's options directly (no `<root>`
+wrapper), and applies it as `{ <root> = lib.mkDefault <flat> }`. `nix run .#configure`
+writes these files; the derived per-root schema is exposed as the package
+`settingsSchema-<root>` (a flat Draft-07 schema, minus any `schemaExclude` sub-paths)
+— use it as the single source of truth for a Cockpit-style editor.
+
+This scoping is a **security boundary**: because the local install seeds these same
+flat files into `/etc/nixos/<root>-settings.json` and the synthesized flake applies
+each **only** under its root, a live editor (e.g. Cockpit writing that file) can only
+affect that root's typed options — never arbitrary system config.
 
 ## 3. Use it
 
@@ -97,27 +124,29 @@ The schema is derived from the **options your install modules declare**, filtere
 
 ## Flake styles & the value file
 
-When the schema is non-empty, `configure` writes `installer/settings.json`; your
-install system reads it as defaults (the framework applies
-`{ <root> = lib.mkDefault settings; }`). Keep this file out of secrets — agenix
-keys and the like flow through `assets`, never `settings.json`.
+When the schema is non-empty, `configure` writes flat `installer/<root>-settings.json`
+files; your install system reads them as defaults (the framework applies
+`{ <root> = lib.mkDefault <flat>; }`). Keep these out of secrets — agenix keys and the
+like flow through `assets`, never the settings JSON.
 
-You do **not** need to commit `installer/settings.json`. The wizard injects it into
-the unattended build by absolute path (`IH_SETTINGS_FILE`, building `--impure`), so
-per-host identity stays a local working file. (A flake only copies git-*tracked*
-files into `self`; an untracked `settings.json` would otherwise be invisible to
-evaluation, and the ISO would silently bake option defaults.) If you build
-`.#installerIso` directly (bypassing the wizard), either commit the file or set
-`IH_SETTINGS_FILE=$PWD/installer/settings.json` and pass `--impure` yourself.
+You do **not** need to commit the settings files. The wizard injects the `installer/`
+directory into the unattended build by absolute path (`IH_SETTINGS_DIR`, building
+`--impure`), so per-host identity stays local. (A flake only copies git-*tracked*
+files into `self`; untracked files would otherwise be invisible to evaluation, and the
+ISO would silently bake option defaults.) If you build `.#installerIso` directly
+(bypassing the wizard), either commit the files or set `IH_SETTINGS_DIR=$PWD/installer`
+and pass `--impure` yourself.
 
 - **local** — the installer seeds `/etc/nixos` with a **synthesized minimal flake**
-  (`flake.nix` + `settings.json`), *not* a copy of your project. The flake pulls the
-  module from `upstream` (github) and reads `settings.json`:
+  (`flake.nix` + one flat `<root>-settings.json` per root), *not* a copy of your
+  project. The flake pulls the module(s) from `upstream` (github) and applies each
+  root's flat JSON **scoped under that root**:
 
   ```nix
   inputs.project.url = "github:Owner/repo";          # = your `upstream`
   # nixosConfigurations."${host.config.networking.hostName}" = host;  (+ `default` alias)
-  # modules = [ project.nixosModules.<root> { config = mapAttrs mkDefault settings; } ];
+  # modules = [ project.nixosModules.<root>
+  #             { <root> = mapAttrs mkDefault (fromJSON ./<root>-settings.json); } ];
   ```
 
   The imported module names are derived from your `optionRoots` (each root that the

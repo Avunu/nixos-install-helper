@@ -21,21 +21,21 @@ show_iso() {
     fi
 }
 
-choice=$(gum choose --header "Deployment path:" \
-    "Unattended ISO  (pre-seeded, per-host, installs with no interaction)" \
-    "Guided ISO      (generic, boots into the menu, choose identity on the box)" \
-    "Network install (nixos-anywhere over SSH to a reachable target)")
+install_choices=("Unattended ISO  (pre-seeded, per-host, installs with no interaction)")
+[ "${IH_GUIDED:-1}" = "1" ] && install_choices+=("Guided ISO      (generic, boots into the menu, choose identity on the box)")
+install_choices+=("Network install (nixos-anywhere over SSH to a reachable target)")
+choice=$(gum choose --header "Deployment path:" "${install_choices[@]}")
 
 case "$choice" in
   Unattended*)
-    # Impure build triggers (builtins.getEnv): env-sourced secrets, and the
-    # untracked settings.json (flakes ignore untracked files → inject by path).
+    # Impure build triggers (builtins.getEnv): env-sourced secrets, and the untracked
+    # per-root settings files (flakes ignore untracked files → inject the dir by path).
     impure=()
-    if [ -f "installer/settings.json" ]; then
+    if ls installer/*-settings.json >/dev/null 2>&1; then
         impure=(--impure)
-        IH_SETTINGS_FILE="$(realpath installer/settings.json)"
-        export IH_SETTINGS_FILE
-        echo ":: seeding installer/settings.json into the build (--impure)"
+        IH_SETTINGS_DIR="$(realpath installer)"
+        export IH_SETTINGS_DIR
+        echo ":: seeding installer/ settings into the build (--impure)"
     fi
     if jq -e 'any(.[]; .source.env != null)' "${IH_ASSETS:-/dev/null}" >/dev/null 2>&1; then
         impure=(--impure)

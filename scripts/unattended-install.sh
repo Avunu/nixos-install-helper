@@ -16,12 +16,12 @@ ASSET_DIR=/etc/installer-assets
 LOG=/tmp/install-helper.log
 
 # disko-install re-evaluates ${FLAKE_DIR}#install with --impure. The technician's
-# settings.json is NOT in the shipped flake (untracked files aren't in `self`), so
-# without this the re-eval would read empty settings and rebuild a DIFFERENT system
-# online. Point IH_SETTINGS_FILE at the settings baked alongside the ISO so the
-# re-eval reproduces the exact toplevel already in the offline closure.
-if [ -f /etc/installer-settings.json ]; then
-    export IH_SETTINGS_FILE=/etc/installer-settings.json
+# per-root settings files are NOT in the shipped flake (untracked files aren't in
+# `self`), so without this the re-eval would read empty settings and rebuild a
+# DIFFERENT system online. Point IH_SETTINGS_DIR at the settings baked alongside the
+# ISO so the re-eval reproduces the exact toplevel already in the offline closure.
+if [ -d /etc/installer-settings ]; then
+    export IH_SETTINGS_DIR=/etc/installer-settings
 fi
 
 HOST_ATTR=$(jq -r '.hostAttr' "$MANIFEST")
@@ -122,15 +122,17 @@ while IFS=$'\t' read -r name target mode; do
     fi
 done < <(jq -r '.assets[]? | select(.embedded) | [.name, .target, (.mode // "0400")] | @tsv' "$MANIFEST")
 
-# Seed /etc/nixos (local style) with the SYNTHESIZED minimal flake — it imports the
-# module from the upstream project (github) and reads settings.json — rather than a
-# verbatim copy of the whole project source. No first-boot reconcile marker: the
-# baked system is already complete (agenix secrets activate at boot regardless).
+# Seed /etc/nixos (local style) with the SYNTHESIZED minimal flake + the FLAT per-root
+# <root>-settings.json files (each scoped under its option root by the flake) — rather
+# than a verbatim copy of the whole project source. No first-boot reconcile marker:
+# the baked system is already complete (agenix secrets activate at boot regardless).
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
     extra_args+=(--extra-files "$(deref_file /etc/installer-local-flake/flake.nix 0644)" "etc/nixos/flake.nix")
-    if [ -f /etc/installer-settings.json ]; then
-        extra_args+=(--extra-files "$(deref_file /etc/installer-settings.json 0644)" "etc/nixos/settings.json")
-    fi
+    while IFS= read -r root; do
+        [ -z "$root" ] && continue
+        src="/etc/installer-settings/${root}-settings.json"
+        [ -f "$src" ] && extra_args+=(--extra-files "$(deref_file "$src" 0644)" "etc/nixos/${root}-settings.json")
+    done < <(jq -r '.roots[]?' "$MANIFEST")
 fi
 
 echo ":: Starting disko-install (offline)…"

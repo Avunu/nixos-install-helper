@@ -59,15 +59,12 @@ efi_args=()
 [ -d /sys/firmware/efi ] && efi_args+=(--write-efi-boot-entries)
 
 # ── Seed: synthesized local flake + chosen identity so first boot applies it ──
-# The synthesized /etc/nixos/flake.nix reads ./settings.json; write the chosen
-# hostName nested under the project's primary option root (only closure-safe keys).
+# The synthesized /etc/nixos/flake.nix reads FLAT per-root <root>-settings.json; write
+# the chosen hostName as a FLAT file for the primary option root (closure-safe keys
+# only). Fall back to a bare settings.json if the project declares no roots.
 SETTINGS=$(mktemp)
 PRIMARY_ROOT=$(jq -r '.primaryRoot // ""' "$MANIFEST")
-if [ -n "$PRIMARY_ROOT" ]; then
-    jq -n --arg r "$PRIMARY_ROOT" --arg h "$HOSTNAME" '{ ($r): { hostName: $h } }' > "$SETTINGS"
-else
-    jq -n --arg h "$HOSTNAME" '{ hostName: $h }' > "$SETTINGS"
-fi
+jq -n --arg h "$HOSTNAME" '{ hostName: $h }' > "$SETTINGS"
 
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
     # /etc/installer-local-flake/flake.nix is an environment.etc symlink into
@@ -76,7 +73,11 @@ if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; 
     FLAKE_REAL=$(mktemp)
     cp -L /etc/installer-local-flake/flake.nix "$FLAKE_REAL"
     extra_args+=(--extra-files "$FLAKE_REAL" "etc/nixos/flake.nix")
-    extra_args+=(--extra-files "$SETTINGS" "etc/nixos/settings.json")
+    if [ -n "$PRIMARY_ROOT" ]; then
+        extra_args+=(--extra-files "$SETTINGS" "etc/nixos/${PRIMARY_ROOT}-settings.json")
+    else
+        extra_args+=(--extra-files "$SETTINGS" "etc/nixos/settings.json")
+    fi
     # The guided template boots with a generic identity; drop a marker so the
     # first-boot reconcile rebuilds /etc/nixos#default and applies the chosen host.
     MARKER=$(mktemp)

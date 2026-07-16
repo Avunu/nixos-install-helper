@@ -15,21 +15,24 @@ gum style --border double --padding "1 2" --border-foreground 212 \
     "nixos-install-helper" "Guided deployment wizard"
 
 # ── 1. Settings (only when this project exposes install-time options) ────────
+# configure.sh writes FLAT per-root files: installer/<root>-settings.json.
 if [ "${IH_HAS_SETTINGS:-0}" = "1" ]; then
-    OUT="installer/settings.json"
-    if [ ! -f "$OUT" ]; then
-        gum style "No ${OUT} yet — let's create one."
-        bash "${SCRIPT_DIR}/configure.sh" "$OUT"
-    elif gum confirm "Reconfigure ${OUT}?" --default=false; then
-        bash "${SCRIPT_DIR}/configure.sh" "$OUT"
+    if ! ls installer/*-settings.json >/dev/null 2>&1; then
+        gum style "No installer settings yet — let's create them."
+        bash "${SCRIPT_DIR}/configure.sh" "installer/settings.json"
+    elif gum confirm "Reconfigure installer settings?" --default=false; then
+        bash "${SCRIPT_DIR}/configure.sh" "installer/settings.json"
     fi
 fi
 
 # ── 2. Deployment path ───────────────────────────────────────────────────────
-choice=$(gum choose --header "How do you want to deploy?" \
-    "Network install  (nixos-anywhere over SSH — no USB)" \
-    "Unattended ISO   (pre-seeded, installs with no interaction)" \
-    "Guided ISO       (generic, choose identity on the target box)")
+deploy_choices=(
+    "Network install  (nixos-anywhere over SSH — no USB)"
+    "Unattended ISO   (pre-seeded, installs with no interaction)"
+)
+# Guided ISO is only offered when the project builds one (guided != false).
+[ "${IH_GUIDED:-1}" = "1" ] && deploy_choices+=("Guided ISO       (generic, choose identity on the target box)")
+choice=$(gum choose --header "How do you want to deploy?" "${deploy_choices[@]}")
 
 case "$choice" in
   Network*)
@@ -44,14 +47,15 @@ case "$choice" in
 esac
 
 # Impure build triggers (builtins.getEnv): env-sourced secrets, and the untracked
-# settings.json (flakes ignore untracked files, so it must be injected by path).
+# per-root settings files (flakes ignore untracked files, so the dir is injected
+# by path via IH_SETTINGS_DIR).
 impure=()
 if [ "${allow_impure}" = "1" ]; then
-    if [ -f "installer/settings.json" ]; then
+    if ls installer/*-settings.json >/dev/null 2>&1; then
         impure=(--impure)
-        IH_SETTINGS_FILE="$(realpath installer/settings.json)"
-        export IH_SETTINGS_FILE
-        echo ":: seeding installer/settings.json into the build (--impure)"
+        IH_SETTINGS_DIR="$(realpath installer)"
+        export IH_SETTINGS_DIR
+        echo ":: seeding installer/ settings into the build (--impure)"
     fi
     if jq -e 'any(.[]; .source.env != null)' "${IH_ASSETS:-/dev/null}" >/dev/null 2>&1; then
         impure=(--impure)

@@ -100,8 +100,9 @@ collect_object() {
 }
 
 gum style --border double --padding "1 2" --border-foreground 212 \
-    "Install configuration" "Answer the prompts; a settings.json is written for the installer."
+    "Install configuration" "Answer the prompts; flat per-root settings files are written."
 
+# Walk the (nested) schema — its top-level properties are the option roots.
 RESULT=$(collect_object "$SCHEMA" "")
 
 # Validate against the schema before writing (best-effort; non-fatal if the
@@ -112,7 +113,22 @@ if command -v check-jsonschema >/dev/null 2>&1; then
     fi
 fi
 
-mkdir -p "$(dirname "$OUT")"
-echo "$RESULT" | jq . > "$OUT"
-gum style --foreground 42 "Wrote ${OUT}"
+# Write one FLAT <root>-settings.json per option root (the top-level keys of RESULT).
+# Each file holds that root's option values directly — no <root> wrapper — so it is
+# the exact shape the synthesized /etc/nixos flake (and Cockpit) reads/writes.
+OUTDIR=$(dirname "$OUT")
+mkdir -p "$OUTDIR"
+written=()
+while IFS= read -r root; do
+    [ -z "$root" ] && continue
+    dest="${OUTDIR}/${root}-settings.json"
+    jq --arg r "$root" '.[$r]' <<<"$RESULT" > "$dest"
+    written+=("$dest")
+done < <(jq -r 'keys[]' <<<"$RESULT")
+
+if [ "${#written[@]}" -eq 0 ]; then
+    gum style --foreground 214 "No option roots — nothing written."
+else
+    gum style --foreground 42 "Wrote: ${written[*]}"
+fi
 echo "Next:  nix run .#install"
