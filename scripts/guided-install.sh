@@ -70,7 +70,12 @@ else
 fi
 
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
-    extra_args+=(--extra-files /etc/installer-local-flake/flake.nix "etc/nixos/flake.nix")
+    # /etc/installer-local-flake/flake.nix is an environment.etc symlink into
+    # /etc/static; disko-install's `cp -a` would copy it as a dangling symlink, so
+    # dereference to a real file first. ($SETTINGS/$MARKER are already real files.)
+    FLAKE_REAL=$(mktemp)
+    cp -L /etc/installer-local-flake/flake.nix "$FLAKE_REAL"
+    extra_args+=(--extra-files "$FLAKE_REAL" "etc/nixos/flake.nix")
     extra_args+=(--extra-files "$SETTINGS" "etc/nixos/settings.json")
     # The guided template boots with a generic identity; drop a marker so the
     # first-boot reconcile rebuilds /etc/nixos#default and applies the chosen host.

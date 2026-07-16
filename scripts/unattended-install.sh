@@ -97,26 +97,39 @@ else
     echo ":: Legacy/BIOS firmware detected."
 fi
 
+# disko-install copies --extra-files with `cp -a`, which PRESERVES symlinks. Every
+# source below lives in the installer's /etc as an environment.etc symlink into
+# /etc/static → the Nix store — paths that DON'T exist on the installed target, so a
+# copied symlink would dangle. Dereference each to a real temp file (fixing its mode)
+# and hand THAT to --extra-files so the target gets real file content.
+deref_file() {
+    local out
+    out=$(mktemp)
+    cp -L "$1" "$out"
+    [ -n "${2:-}" ] && chmod "$2" "$out"
+    printf '%s' "$out"
+}
+
 # ── Build the --extra-files list ─────────────────────────────────────────────
 extra_args=()
 # Embedded secret assets → their target paths on the installed system.
-while IFS=$'\t' read -r name target; do
+while IFS=$'\t' read -r name target mode; do
     [ -z "$name" ] && continue
     src="${ASSET_DIR}/${name}"
     if [ -e "$src" ]; then
         echo ":: asset ${name} → ${target}"
-        extra_args+=(--extra-files "$src" "$target")
+        extra_args+=(--extra-files "$(deref_file "$src" "${mode:-0400}")" "$target")
     fi
-done < <(jq -r '.assets[]? | select(.embedded) | [.name, .target] | @tsv' "$MANIFEST")
+done < <(jq -r '.assets[]? | select(.embedded) | [.name, .target, (.mode // "0400")] | @tsv' "$MANIFEST")
 
 # Seed /etc/nixos (local style) with the SYNTHESIZED minimal flake — it imports the
 # module from the upstream project (github) and reads settings.json — rather than a
 # verbatim copy of the whole project source. No first-boot reconcile marker: the
 # baked system is already complete (agenix secrets activate at boot regardless).
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
-    extra_args+=(--extra-files /etc/installer-local-flake/flake.nix "etc/nixos/flake.nix")
+    extra_args+=(--extra-files "$(deref_file /etc/installer-local-flake/flake.nix 0644)" "etc/nixos/flake.nix")
     if [ -f /etc/installer-settings.json ]; then
-        extra_args+=(--extra-files /etc/installer-settings.json "etc/nixos/settings.json")
+        extra_args+=(--extra-files "$(deref_file /etc/installer-settings.json 0644)" "etc/nixos/settings.json")
     fi
 fi
 
