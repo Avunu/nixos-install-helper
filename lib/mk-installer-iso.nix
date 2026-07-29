@@ -40,6 +40,9 @@
   # /etc/installer-local-flake/flake.nix; the install scripts seed it (with
   # settings.json) into /etc/nixos instead of copying the whole project flake.
   localFlakeNix ? null,
+  # Placeholder machine-local module seeded alongside it as /etc/nixos/local.nix
+  # (extra packages / per-host NixOS config the JSON settings cannot express).
+  localModuleNix ? null,
   # Extra store paths to force onto the ISO (guided: trivial-builder deps).
   extraClosurePaths ? [ ],
   extraSystemPackages ? [ ],
@@ -109,6 +112,10 @@ nixpkgs.lib.nixosSystem {
           # Synthesized local flake seeded into /etc/nixos by the install scripts.
           ++ lib.optional (localFlakeNix != null) {
             "installer-local-flake/flake.nix".source = localFlakeNix;
+          }
+          # …and its placeholder local.nix, seeded next to it.
+          ++ lib.optional (localModuleNix != null) {
+            "installer-local-flake/local.nix".source = localModuleNix;
           }
           # Embed secret assets (unattended): each lands at
           # /etc/installer-assets/<name>; the script copies it with --extra-files.

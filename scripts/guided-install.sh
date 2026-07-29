@@ -72,7 +72,18 @@ if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; 
     # dereference to a real file first. ($SETTINGS/$MARKER are already real files.)
     FLAKE_REAL=$(mktemp)
     cp -L /etc/installer-local-flake/flake.nix "$FLAKE_REAL"
+    # mktemp is 0600 and disko-install's `cp -a` preserves it; these are the
+    # files the machine's owner edits, so land them 0644 like the unattended path.
+    chmod 0644 "$FLAKE_REAL"
     extra_args+=(--extra-files "$FLAKE_REAL" "etc/nixos/flake.nix")
+    # Placeholder machine-local module the flake imports (extra packages / any
+    # NixOS config the typed JSON settings cannot express). Empty but annotated.
+    if [ -f /etc/installer-local-flake/local.nix ]; then
+        LOCAL_REAL=$(mktemp)
+        cp -L /etc/installer-local-flake/local.nix "$LOCAL_REAL"
+        chmod 0644 "$LOCAL_REAL"
+        extra_args+=(--extra-files "$LOCAL_REAL" "etc/nixos/local.nix")
+    fi
     if [ -n "$PRIMARY_ROOT" ]; then
         extra_args+=(--extra-files "$SETTINGS" "etc/nixos/${PRIMARY_ROOT}-settings.json")
     else

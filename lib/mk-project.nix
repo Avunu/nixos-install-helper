@@ -255,6 +255,58 @@ let
     in
     if fromRoots != [ ] then fromRoots else [ "default" ];
 
+  # ── Name of the upstream input in the synthesized flake ────────────────────
+  # The REPO name rather than a generic `project`, so the seeded flake reads like
+  # one a human wrote (`nixos-nano-desktop.nixosModules.nanoDesktop`) and
+  # `nix flake metadata /etc/nixos` names what the machine actually tracks.
+  #   github:Owner/repo[/ref]           → repo   (shorthand: repo is 2nd)
+  #   git+https://host/a/b/repo.git     → repo   (URL/path: repo is last)
+  upstreamRepoName =
+    let
+      # Drop #fragment then ?query (…?ref=main), then the scheme. `upstream` is
+      # null for remote-style projects — that path falls through to "project".
+      ref = if upstream == null then "" else upstream;
+      bare = builtins.head (lib.splitString "?" (builtins.head (lib.splitString "#" ref)));
+      scheme = builtins.head (lib.splitString ":" bare);
+      rest = lib.removePrefix "${scheme}:" bare;
+      parts = lib.filter (p: p != "") (lib.splitString "/" rest);
+      shorthand = builtins.elem scheme [
+        "github"
+        "gitlab"
+        "sourcehut"
+      ];
+      raw =
+        if parts == [ ] then
+          ""
+        else if shorthand && builtins.length parts >= 2 then
+          builtins.elemAt parts 1
+        else
+          lib.last parts;
+    in
+    lib.removeSuffix ".git" raw;
+
+  # A Nix identifier is [A-Za-z_][A-Za-z0-9_'-]*; anything else (a leading digit,
+  # the dot in "dotfiles.nix") would make the generated flake unparseable, and
+  # `self`/`nixpkgs` are already taken in its outputs signature. Fall back to the
+  # old generic name rather than emit something broken.
+  upstreamInputName =
+    let
+      cleaned = lib.stringAsChars (
+        c: if builtins.match "[A-Za-z0-9_'-]" c != null then c else "-"
+      ) upstreamRepoName;
+      valid = builtins.match "[A-Za-z_].*" cleaned != null;
+    in
+    if
+      !valid
+      || builtins.elem cleaned [
+        "self"
+        "nixpkgs"
+      ]
+    then
+      "project"
+    else
+      cleaned;
+
   # Built lazily: null unless local style with an upstream, so it never evaluates
   # for remote projects (cocalico) or when there is nothing to reference.
   localFlakeNix =
@@ -263,11 +315,16 @@ let
         {
           inputs = {
             nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-            project.url = "${upstream}";
-            project.inputs.nixpkgs.follows = "nixpkgs";
+            ${upstreamInputName}.url = "${upstream}";
+            ${upstreamInputName}.inputs.nixpkgs.follows = "nixpkgs";
           };
           outputs =
-            { self, nixpkgs, project }:
+            {
+              self,
+              nixpkgs,
+              ${upstreamInputName},
+              ...
+            }@inputs:
             let
               load =
                 root:
@@ -276,10 +333,18 @@ let
                 );
               host = nixpkgs.lib.nixosSystem {
                 system = "${system}";
+                # ./local.nix reaches every input above as `inputs`, so pulling a
+                # package out of an added flake needs no edit to this file.
+                specialArgs = { inherit inputs; };
                 modules = [
-        ${lib.concatMapStringsSep "\n" (m: "          project.nixosModules.${m}") localModuleNames}
+        ${lib.concatMapStringsSep "\n" (
+          m: "          ${upstreamInputName}.nixosModules.${m}"
+        ) localModuleNames}
         ${lib.concatMapStringsSep "\n" (r: "          { ${r} = load \"${r}\"; }") resolvedRoots}
-                ];
+                ]
+                # Machine-local configuration (extra packages, per-host tweaks).
+                # Optional, so a deleted local.nix can never break a rebuild.
+                ++ nixpkgs.lib.optional (builtins.pathExists ./local.nix) ./local.nix;
               };
             in
             {
@@ -292,6 +357,64 @@ let
                 default = host;
               };
             };
+        }
+      ''
+    else
+      null;
+
+  # ── Placeholder machine-local module ───────────────────────────────────────
+  # Seeded next to the synthesized flake as /etc/nixos/local.nix. The JSON
+  # settings can only carry that root's serializable options — a package is a Nix
+  # value, not a string, so "install one more program" (by far the most common
+  # customization) has nowhere to go in JSON. This file is that place: ordinary
+  # NixOS config merged on top, owned by the machine, never rewritten by an
+  # upgrade. Shipped empty-but-annotated so the shape is obvious without docs.
+  localModuleNix =
+    let
+      settingsNote = lib.optionalString (resolvedRoots != [ ]) ''
+
+        # and the settings the installer asked about live in
+        #   ${lib.concatMapStringsSep ", " (r: "${r}-settings.json") resolvedRoots}
+        # which is where anything listed there is changed.'';
+    in
+    if flakeStyle == "local" && upstream != null then
+      pkgs.writeText "local.nix" ''
+        # /etc/nixos/local.nix — configuration for THIS machine.
+        #
+        # The rest of /etc/nixos tracks upstream — flake.nix pulls the module(s)
+        # from
+        #   ${upstream}${settingsNote}
+        # Apply a change from any of these files with
+        # `nixos-rebuild switch --flake /etc/nixos`.
+        #
+        # This file is everything else — plain NixOS configuration, merged on
+        # top, and yours: an upgrade never rewrites it.
+        #
+        # Extra software is the usual reason to be here. Package names cannot
+        # live in the JSON settings (a package is a Nix value, not a string), so
+        # they go below. Find names at https://search.nixos.org/packages.
+        {
+          config,
+          lib,
+          pkgs,
+          inputs,
+          ...
+        }:
+        {
+          environment.systemPackages = with pkgs; [
+            # gimp
+            # vlc
+          ];
+
+          # Anything NixOS can configure belongs here too, for example:
+          # services.tailscale.enable = true;
+          # programs.steam.enable = true;
+          #
+          # A package from another flake: add the input to flake.nix, then reach
+          # it here through `inputs`, e.g.
+          # environment.systemPackages = [
+          #   inputs.some-flake.packages.''${pkgs.stdenv.hostPlatform.system}.default
+          # ];
         }
       ''
     else
@@ -321,6 +444,7 @@ let
       device,
       settingsDir ? null,
       localFlakeNix ? null,
+      localModuleNix ? null,
     }:
     (import ./mk-installer-iso.nix {
       inherit
@@ -331,6 +455,7 @@ let
         target
         settingsDir
         localFlakeNix
+        localModuleNix
         ;
       flakeSelf = self;
       manifest = {
@@ -384,9 +509,17 @@ let
   };
 in
 {
-  # `localFlakeNix` (null for remote) is exposed for inspection/tests — it is the
-  # synthesized /etc/nixos flake the local-style installer seeds onto the target.
-  inherit settingsSchema resolvedRoots localFlakeNix;
+  # `localFlakeNix` / `localModuleNix` (both null for remote) are exposed for
+  # inspection/tests — they are the synthesized /etc/nixos flake and its
+  # placeholder machine-local module, seeded onto the target by a local install.
+  # `upstreamInputName` is what that flake calls the upstream input.
+  inherit
+    settingsSchema
+    resolvedRoots
+    localFlakeNix
+    localModuleNix
+    upstreamInputName
+    ;
 
   nixosConfigurations = {
     install = installSystem;
@@ -401,7 +534,7 @@ in
       mode = "unattended";
       embed = embeddedAssets;
       device = resolvedDiskDevice;
-      inherit settingsDir localFlakeNix;
+      inherit settingsDir localFlakeNix localModuleNix;
     };
   }
   # Per-root FLAT schema packages: `settingsSchema-<root>` (e.g. what
@@ -420,7 +553,7 @@ in
       mode = "guided";
       embed = [ ];
       device = "";
-      inherit settingsDir localFlakeNix;
+      inherit settingsDir localFlakeNix localModuleNix;
     };
   };
 

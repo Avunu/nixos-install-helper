@@ -138,20 +138,38 @@ ISO would silently bake option defaults.) If you build `.#installerIso` directly
 and pass `--impure` yourself.
 
 - **local** — the installer seeds `/etc/nixos` with a **synthesized minimal flake**
-  (`flake.nix` + one flat `<root>-settings.json` per root), *not* a copy of your
-  project. The flake pulls the module(s) from `upstream` (github) and applies each
-  root's flat JSON **scoped under that root**:
+  (`flake.nix` + one flat `<root>-settings.json` per root + a placeholder
+  `local.nix`), *not* a copy of your project. The flake pulls the module(s) from
+  `upstream` (github) and applies each root's flat JSON **scoped under that root**:
 
   ```nix
-  inputs.project.url = "github:Owner/repo";          # = your `upstream`
+  inputs.nixos-nano-desktop.url = "github:Owner/nixos-nano-desktop";   # = your `upstream`
   # nixosConfigurations."${host.config.networking.hostName}" = host;  (+ `default` alias)
-  # modules = [ project.nixosModules.<root>
-  #             { <root> = mapAttrs mkDefault (fromJSON ./<root>-settings.json); } ];
+  # specialArgs = { inherit inputs; };
+  # modules = [ nixos-nano-desktop.nixosModules.<root>
+  #             { <root> = mapAttrs mkDefault (fromJSON ./<root>-settings.json); } ]
+  #           ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
   ```
+
+  The input is named after the **repo** in your `upstream` ref (`github:Owner/repo`
+  and `git+https://host/a/repo.git` both → `repo`), so the seeded flake reads like
+  one a human wrote and `nix flake metadata /etc/nixos` names what the machine
+  actually tracks. A name that isn't a valid Nix identifier (leading digit, a dot)
+  is sanitized, and `nixpkgs`/`self` fall back to the generic `project`.
 
   The imported module names are derived from your `optionRoots` (each root that the
   project also exports as `nixosModules.<root>`). Ongoing updates just track
   upstream: `nixos-rebuild switch --flake /etc/nixos` (bare — resolves by hostname).
+
+  **`local.nix`** is the machine's own escape hatch, seeded empty-but-annotated and
+  never rewritten by an upgrade. The typed JSON settings can only carry that root's
+  *serializable* options, so the most common customization of all — "install one
+  more program" — has nowhere to go in JSON (a package is a Nix value, not a
+  string). `local.nix` is a plain NixOS module merged on top, shipped with an
+  `environment.systemPackages` block ready to fill in; the flake imports it under
+  `pathExists`, so deleting it is also fine. Every flake input reaches it as
+  `inputs` (via `specialArgs`), so a package from an added input needs no edit to
+  the generated `flake.nix` beyond the input itself.
 
   For a normal local install the **baked system is already complete**, so there is
   **no first-boot rebuild** (agenix secrets activate at boot). Two cases do rebuild

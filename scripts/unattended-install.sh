@@ -128,6 +128,11 @@ done < <(jq -r '.assets[]? | select(.embedded) | [.name, .target, (.mode // "040
 # the baked system is already complete (agenix secrets activate at boot regardless).
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
     extra_args+=(--extra-files "$(deref_file /etc/installer-local-flake/flake.nix 0644)" "etc/nixos/flake.nix")
+    # Placeholder machine-local module the flake imports (extra packages / any
+    # NixOS config the typed JSON settings cannot express). Empty but annotated.
+    if [ -f /etc/installer-local-flake/local.nix ]; then
+        extra_args+=(--extra-files "$(deref_file /etc/installer-local-flake/local.nix 0644)" "etc/nixos/local.nix")
+    fi
     while IFS= read -r root; do
         [ -z "$root" ] && continue
         src="/etc/installer-settings/${root}-settings.json"
