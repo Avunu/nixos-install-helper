@@ -16,6 +16,7 @@
     nixos-anywhere = {
       url = "github:nix-community/nixos-anywhere";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixos-stable.follows = "nixpkgs";
       inputs.disko.follows = "disko";
     };
   };
