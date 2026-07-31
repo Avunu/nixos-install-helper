@@ -26,9 +26,27 @@ fi
 DISK_LINE=$(printf '%s\n' "${DISKS[@]}" | gum choose --header "Target disk (ALL DATA WIPED):")
 DISK_DEVICE=$(printf '%s' "$DISK_LINE" | cut -f1)
 
-# ── Identity ─────────────────────────────────────────────────────────────────
-HOSTNAME=$(gum input --header "Hostname" --placeholder "nixos" --value "nixos")
-HOSTNAME=${HOSTNAME:-nixos}
+# ── Per-machine settings ─────────────────────────────────────────────────────
+# Which questions to ask is the PROJECT's call, not this script's: the manifest's
+# `prompts` list is mkProject's `guidedPrompts`, resolved against the project's own
+# option schema for each prompt's text and default. Nothing here is hardcoded, so a
+# project that asks for a hostname and a username gets both, and one that asks for
+# neither is not interrogated about options it does not have.
+#
+# Keys are dotted paths under the primary option root, so `setpath` — not a flat
+# assignment — is what writes `user.name` as nested JSON the way the option tree
+# expects it.
+ANSWERS=$(mktemp)
+echo '{}' > "$ANSWERS"
+SUMMARY=()
+while IFS=$'\t' read -r key prompt def; do
+    [ -z "$key" ] && continue
+    val=$(gum input --header "$prompt" --placeholder "$def" --value "$def")
+    val=${val:-$def}
+    jq --arg k "$key" --arg v "$val" 'setpath($k | split("."); $v)' "$ANSWERS" > "${ANSWERS}.tmp"
+    mv "${ANSWERS}.tmp" "$ANSWERS"
+    SUMMARY+=("${key}: ${val}")
+done < <(jq -r '.prompts[]? | [.key, .prompt, (.default // "")] | @tsv' "$MANIFEST")
 
 # ── Secret assets (provided at install time; ISO stays generic) ──────────────
 STAGE=$(mktemp -d)
@@ -51,7 +69,7 @@ done < <(jq -r '.assets[]? | [.name, .target, (.mode // "0400")] | @tsv' "$MANIF
 
 # ── Confirm ──────────────────────────────────────────────────────────────────
 gum style --border normal --padding "0 1" \
-    "Disk:     ${DISK_DEVICE}" "Hostname: ${HOSTNAME}" "Style:    ${FLAKE_STYLE}"
+    "Disk:  ${DISK_DEVICE}" "${SUMMARY[@]}" "Style: ${FLAKE_STYLE}"
 gum confirm "Proceed with the install? This WIPES ${DISK_DEVICE}." || { echo "Aborted."; exit 1; }
 
 # ── EFI vs legacy ────────────────────────────────────────────────────────────
@@ -59,12 +77,15 @@ efi_args=()
 [ -d /sys/firmware/efi ] && efi_args+=(--write-efi-boot-entries)
 
 # ── Seed: synthesized local flake + chosen identity so first boot applies it ──
-# The synthesized /etc/nixos/flake.nix reads FLAT per-root <root>-settings.json; write
-# the chosen hostName as a FLAT file for the primary option root (closure-safe keys
-# only). Fall back to a bare settings.json if the project declares no roots.
-SETTINGS=$(mktemp)
+# The synthesized /etc/nixos/flake.nix reads FLAT per-root <root>-settings.json; the
+# answers collected above ARE that file's contents (closure-safe keys only). Fall
+# back to a bare settings.json if the project declares no roots.
+SETTINGS="$ANSWERS"
 PRIMARY_ROOT=$(jq -r '.primaryRoot // ""' "$MANIFEST")
-jq -n --arg h "$HOSTNAME" '{ hostName: $h }' > "$SETTINGS"
+# mktemp is 0600 and disko-install's `cp -a` preserves it. This is the file the
+# machine's owner (and Cockpit, where a project ships one) edits to change any of
+# these settings later, so it lands 0644 like the flake beside it.
+chmod 0644 "$SETTINGS"
 
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
     # /etc/installer-local-flake/flake.nix is an environment.etc symlink into

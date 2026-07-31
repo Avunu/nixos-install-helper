@@ -62,6 +62,10 @@ let
     inherit lib flakeSelf target;
     pkgs = nixpkgs.legacyPackages.${system};
     extraPaths = extraClosurePaths ++ (map (a: a.source) embeddedAssets);
+    # disko-install forces the --disk devices onto boot.loader.grub.devices, which
+    # changes the installed system; the offline closure has to cover that. Empty
+    # for a guided ISO, whose device is chosen on the box.
+    grubDevices = lib.optional (manifest.diskDevice or "" != "") manifest.diskDevice;
   };
 in
 nixpkgs.lib.nixosSystem {

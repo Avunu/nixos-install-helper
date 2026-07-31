@@ -65,6 +65,22 @@ args@{
   # ~23x shorter silent) build — see mk-installer-iso.nix. Raise to
   # "zstd -Xcompression-level 19" for a release image someone downloads.
   squashfsCompression ? "zstd -Xcompression-level 6",
+  # The options a GUIDED install asks about on the target box, named by the project
+  # as dotted paths under its primary option root ("hostName", "user.name", …).
+  #
+  # Named by the PROJECT, deliberately. The framework has no business knowing that
+  # an option called `hostName` is a hostname: guessing from well-known key names
+  # would silently do nothing for a project that spells it `machineName`, and would
+  # be impossible to discover from the outside when it did. The project already
+  # declares these options; it is the only party that knows which of them are
+  # per-machine identity rather than configuration, so it says so here.
+  #
+  # Default empty: a guided ISO with no list asks for the disk and nothing else,
+  # which is the honest behaviour for an image the framework knows nothing about.
+  # Only string-typed options are eligible — the answers are seeded as JSON for the
+  # first-boot reconcile, and a free-text prompt is the only widget the boot script
+  # has. Keep the list to things that do not move the closure.
+  guidedPrompts ? [ ],
 }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -475,7 +491,8 @@ let
         diskDevice = device;
         assets = assetTargets;
         roots = resolvedRoots;
-        primaryRoot = if resolvedRoots == [ ] then null else builtins.head resolvedRoots;
+        primaryRoot = primaryRoot;
+        prompts = guidedQuestions;
       };
       installScript =
         if mode == "guided" then
@@ -485,6 +502,65 @@ let
       embeddedAssets = embed;
       inherit dropZfs isoModules squashfsCompression;
     }).config.system.build.isoImage;
+
+  primaryRoot = if resolvedRoots == [ ] then null else builtins.head resolvedRoots;
+
+  # ── The questions a guided ISO asks on the box ─────────────────────────────
+  # A guided ISO bakes the settings-free template and the technician answers for the
+  # machine in front of them. WHICH questions is `guidedPrompts`, named by the
+  # project; the prompt text and default are read off the derived schema, so the
+  # option's own declaration stays the single source of truth and the boot script
+  # hardcodes nothing.
+  #
+  # The description's FIRST LINE becomes the gum header — an option's description
+  # can run to paragraphs (nano-desktop's do) and gum would render the lot.
+  #
+  # A path that names no option, or names one the schema dropped (non-serializable,
+  # internal, or pruned by schemaExclude), is an error rather than a silent no-show:
+  # the failure mode this replaced was a guided ISO that quietly stopped asking.
+  guidedQuestions =
+    let
+      props = if primaryRoot == null then { } else (perRootSchema primaryRoot).properties or { };
+      firstLine = s: builtins.head (lib.splitString "\n" s);
+      lookup =
+        path: node:
+        let
+          head = builtins.head path;
+          rest = builtins.tail path;
+          child = (node.properties or { }).${head} or null;
+        in
+        if child == null then
+          null
+        else if rest == [ ] then
+          child
+        else
+          lookup rest child;
+    in
+    map (
+      path:
+      let
+        p = lookup (lib.splitString "." path) { properties = props; };
+      in
+      if p == null then
+        throw ''
+          guidedPrompts names "${path}", which ${primaryRoot} does not declare as a
+          settable option (or which schemaExclude removed). The guided ISO derives
+          its prompt text and default from the schema, so it cannot ask for it.
+        ''
+      else if (p.type or null) != "string" then
+        throw ''
+          guidedPrompts names "${path}", which is not a string option. The guided
+          installer only has a free-text prompt, and its answer is seeded as JSON
+          for the first-boot reconcile — so enums, numbers and lists have to stay
+          baked into the template.
+        ''
+      else
+        {
+          key = path;
+          prompt = if (p.description or "") != "" then firstLine p.description else "${primaryRoot}.${path}";
+          default = p.default or "";
+        }
+    ) guidedPrompts;
 
   # ── Guided ISO precondition: every option must have a default ──────────────
   # The guided ISO bakes `templateSystem` — the install modules evaluated with NO
