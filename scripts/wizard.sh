@@ -67,6 +67,16 @@ fi
 # the build output, so an evaluation/assertion failure looks like a silent exit
 # ("no error, no ISO") instead of showing the actual cause.
 gum style --foreground 212 "Building ${attr}… (build logs below)"
+# …and the last step of that build is one mksquashfs pass over the whole offline
+# closure. mksquashfs suppresses its progress bar when stdout is not a tty (under
+# `nix build` it never is), so the log stops dead after "Creating 4.0 filesystem
+# on nix-store.squashfs" for as long as the pass takes. Set expectations, or it
+# reads as a hang.
+gum style --faint \
+    "The build ends with a single mksquashfs pass over the whole offline closure." \
+    "mksquashfs prints nothing to a non-tty, so the log stops at \"Creating 4.0" \
+    "filesystem on nix-store.squashfs\" and stays there for several minutes." \
+    "That is the compression running, not a hang — watch CPU if in doubt."
 if ! nix build "${impure[@]}" "${FLAKE}#${attr}" --print-build-logs; then
     gum style --foreground 196 "Build of ${attr} FAILED — see the log above for the cause."
     exit 1

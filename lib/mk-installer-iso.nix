@@ -49,6 +49,9 @@
   # Extra NixOS modules merged into the ISO system itself — e.g. a hardware
   # kernel the installer must boot with (cocalico's strix-halo linuxPackages_6_18).
   isoModules ? [ ],
+  # mksquashfs compression for the ISO's nix store. See the isoImage assignment
+  # below for why this is NOT nixpkgs' default. null disables compression.
+  squashfsCompression ? "zstd -Xcompression-level 6",
   # Lightening toggles (router drops zfs; cocalico's install system is xfs-only).
   dropZfs ? false,
   dropDocs ? true,
@@ -128,6 +131,28 @@ nixpkgs.lib.nixosSystem {
         );
 
         isoImage.storeContents = [ offlineClosure.closureInfo ];
+
+        # ── squashfs compression ──────────────────────────────────────────────
+        # nixpkgs defaults this to `zstd -Xcompression-level 19`, which is sized
+        # for a ~1 GB minimal ISO that is built once on Hydra and downloaded a
+        # million times. This ISO is the opposite case: it carries a COMPLETE
+        # offline install closure (a desktop or router system plus every flake
+        # input source — routinely 6-10 GB), it is built by one technician, and
+        # it is written straight to a USB stick.
+        #
+        # The difference is not marginal. Measured on an i7-8550U, zstd -T8 over
+        # a 228 MiB store binary: level 19 took 47.2 s (4.8 MB/s), level 6 took
+        # 2.1 s (110 MB/s) — 23x — for 18% more output. Over a 9 GB store that
+        # is ~30 minutes of mksquashfs versus ~1.5, and mksquashfs suppresses its
+        # progress bar when stdout is not a tty, so those 30 minutes are entirely
+        # SILENT after "Creating 4.0 filesystem on nix-store.squashfs" — which
+        # reads exactly like a hung build.
+        #
+        # Nothing on the boot side pays for this: zstd decompression speed is
+        # essentially independent of the level it was compressed at, so the ISO
+        # boots and installs just as fast. mkDefault so a project can still ask
+        # for a smaller image via `isoModules`.
+        isoImage.squashfsCompression = lib.mkDefault squashfsCompression;
 
         nix.settings.experimental-features = [
           "nix-command"

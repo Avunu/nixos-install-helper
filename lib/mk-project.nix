@@ -60,6 +60,11 @@ args@{
   # Extra NixOS modules merged into the installer ISO itself (e.g. a hardware
   # kernel the installer must boot with).
   isoModules ? [ ],
+  # mksquashfs compression for the ISO store. The default trades ~18% image size
+  # for a ~23x faster (and, since mksquashfs prints nothing to a non-tty,
+  # ~23x shorter silent) build — see mk-installer-iso.nix. Raise to
+  # "zstd -Xcompression-level 19" for a release image someone downloads.
+  squashfsCompression ? "zstd -Xcompression-level 6",
 }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -478,7 +483,7 @@ let
         else
           "${frameworkSelf}/scripts/unattended-install.sh";
       embeddedAssets = embed;
-      inherit dropZfs isoModules;
+      inherit dropZfs isoModules squashfsCompression;
     }).config.system.build.isoImage;
 
   # ── Apps (gum-driven; run from the project working tree) ───────────────────

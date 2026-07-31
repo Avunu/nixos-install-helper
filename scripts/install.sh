@@ -9,6 +9,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-flash.sh
 source "${SCRIPT_DIR}/lib-flash.sh"
 
+# The last step of every ISO build is one mksquashfs pass over the whole offline
+# closure, and mksquashfs suppresses its progress bar whenever stdout is not a
+# tty — which under `nix build` it never is. So the build goes completely silent
+# after "Creating 4.0 filesystem on nix-store.squashfs" for as long as that pass
+# takes (minutes, on a multi-GB closure), and looks hung. Say so up front.
+squashfs_note() {
+    gum style --faint \
+        "The build ends with a single mksquashfs pass over the whole offline closure." \
+        "mksquashfs prints nothing to a non-tty, so the log stops at \"Creating 4.0" \
+        "filesystem on nix-store.squashfs\" and stays there for several minutes." \
+        "That is the compression running, not a hang — watch CPU if in doubt."
+}
+
 show_iso() {
     local iso
     iso=$(find -L result/iso -name '*.iso' 2>/dev/null | head -1)
@@ -44,6 +57,7 @@ case "$choice" in
     # Foreground build with live logs — see the wizard.sh note: a spinner would
     # hide an eval/assertion failure and make it look like a silent no-op.
     gum style --foreground 212 "Building unattended ISO… (build logs below)"
+    squashfs_note
     if ! nix build "${impure[@]}" "${FLAKE}#installerIso" --print-build-logs; then
         gum style --foreground 196 "Unattended ISO build FAILED — see the log above."
         exit 1
@@ -52,6 +66,7 @@ case "$choice" in
     ;;
   Guided*)
     gum style --foreground 212 "Building guided ISO… (build logs below)"
+    squashfs_note
     if ! nix build "${FLAKE}#guidedIso" --print-build-logs; then
         gum style --foreground 196 "Guided ISO build FAILED — see the log above."
         exit 1
