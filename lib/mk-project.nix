@@ -486,6 +486,32 @@ let
       inherit dropZfs isoModules squashfsCompression;
     }).config.system.build.isoImage;
 
+  # ── Guided ISO precondition: every option must have a default ──────────────
+  # The guided ISO bakes `templateSystem` — the install modules evaluated with NO
+  # settings at all, because the ISO is generic and identity is chosen on the box.
+  # So an option the project declares WITHOUT a default has nothing to fall back
+  # to, and evaluating the template's toplevel dies with the module system's
+  # "The option `foo.bar' was accessed but has no value defined", buried under a
+  # trace that names make-iso9660-image.nix and `environment.etc.install-closure`
+  # — three layers away from the actual cause.
+  #
+  # The derived schema already knows exactly which options those are: treeToSchema
+  # emits a `required` list for every option leaf it saw no `default` on. Collect
+  # them as dotted paths and fail the guided ISO with that list instead.
+  #
+  # (Only options the schema can see are covered — a non-serializable option, e.g.
+  # `types.package`, is dropped from the schema and so cannot be reported here.
+  # Those still produce the raw module-system error.)
+  requiredPaths =
+    prefix: schema:
+    (map (k: "${prefix}${k}") (schema.required or [ ]))
+    ++ lib.concatLists (
+      lib.mapAttrsToList (k: v: if v ? properties then requiredPaths "${prefix}${k}." v else [ ]) (
+        schema.properties or { }
+      )
+    );
+  guidedMissingDefaults = lib.concatMap (r: requiredPaths "${r}." (perRootSchema r)) resolvedRoots;
+
   # ── Apps (gum-driven; run from the project working tree) ───────────────────
   mkApp = name: runtimeInputs: {
     type = "app";
@@ -553,13 +579,30 @@ in
   )
   # Guided (generic template) ISO — omitted entirely when `guided = false`.
   // lib.optionalAttrs guided {
-    guidedIso = mkIso {
-      target = templateSystem;
-      mode = "guided";
-      embed = [ ];
-      device = "";
-      inherit settingsDir localFlakeNix localModuleNix;
-    };
+    guidedIso =
+      if guidedMissingDefaults != [ ] then
+        throw ''
+          The guided ISO cannot be built: these options have no default —
+
+            ${lib.concatStringsSep "\n  " guidedMissingDefaults}
+
+          The guided ISO is generic by design: it bakes the install modules
+          evaluated with NO settings (identity is chosen on the target box and
+          applied by the first-boot reconcile), so every option it evaluates must
+          have a default to fall back on.
+
+          Give each option above a placeholder default — the guided install
+          overwrites it anyway — or pass `guided = false` to mkProject to build
+          only the per-host unattended ISO and the network deploy.
+        ''
+      else
+        mkIso {
+          target = templateSystem;
+          mode = "guided";
+          embed = [ ];
+          device = "";
+          inherit settingsDir localFlakeNix localModuleNix;
+        };
   };
 
   apps.${system} = {
