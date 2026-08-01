@@ -107,8 +107,21 @@ nixpkgs.lib.nixosSystem {
             { "installer-flake".source = flakeSelf.outPath; }
             # The COMPLETE offline install closure (store paths list).
             { "install-closure".source = "${offlineClosure.closureInfo}/store-paths"; }
-            # Manifest read by the boot scripts.
-            { "installer-manifest.json".text = builtins.toJSON manifest; }
+            # Manifest read by the boot scripts. `diskoInstallCli` is disko's own
+            # install-cli.nix — the expression disko-install evaluates — so the
+            # preflight in lib-preflight.sh can ask nix what that evaluation would
+            # BUILD before the disk is touched, rather than finding out from a
+            # failed download halfway through. Named here rather than discovered
+            # on the box: the path is a private detail of the disko package, and
+            # digging it out of the wrapper script at runtime would be guesswork.
+            {
+              "installer-manifest.json".text = builtins.toJSON (
+                manifest
+                // {
+                  diskoInstallCli = "${disko.packages.${system}.default}/share/disko/install-cli.nix";
+                }
+              );
+            }
           ]
           # The per-root settings that baked `target` (a dir of flat
           # <root>-settings.json), so disko-install's impure re-eval (via

@@ -11,6 +11,10 @@ set -euo pipefail
 MANIFEST=/etc/installer-manifest.json
 FLAKE_DIR=/etc/installer-flake
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-preflight.sh
+source "${SCRIPT_DIR}/lib-preflight.sh"
+
 HOST_ATTR=$(jq -r '.hostAttr // "installTemplate"' "$MANIFEST")
 DISK_NAME=$(jq -r '.diskName // "main"' "$MANIFEST")
 FLAKE_STYLE=$(jq -r '.flakeStyle // "local"' "$MANIFEST")
@@ -114,6 +118,16 @@ if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; 
     # first-boot reconcile rebuilds /etc/nixos#default and applies the chosen host.
     MARKER=$(mktemp)
     extra_args+=(--extra-files "$MARKER" "etc/nixos/.first-boot-reconcile")
+fi
+
+# Prove the closure covers this machine before anything is destroyed. The guided
+# path needs this more than the unattended one: the disk is chosen here, on the
+# box, so it is an input the ISO could not have been baked against. See
+# lib-preflight.sh.
+if ! preflight_offline "$FLAKE_DIR" "$HOST_ATTR" "$DISK_NAME" "$DISK_DEVICE" \
+        "$([ -d /sys/firmware/efi ] && echo true || echo false)"; then
+    sleep 3
+    exec bash -i
 fi
 
 echo ":: Installing template offline…"

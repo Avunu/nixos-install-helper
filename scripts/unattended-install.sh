@@ -15,6 +15,10 @@ FLAKE_DIR=/etc/installer-flake
 ASSET_DIR=/etc/installer-assets
 LOG=/tmp/install-helper.log
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-preflight.sh
+source "${SCRIPT_DIR}/lib-preflight.sh"
+
 # disko-install re-evaluates ${FLAKE_DIR}#install with --impure. The technician's
 # per-root settings files are NOT in the shipped flake (untracked files aren't in
 # `self`), so without this the re-eval would read empty settings and rebuild a
@@ -138,6 +142,16 @@ if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; 
         src="/etc/installer-settings/${root}-settings.json"
         [ -f "$src" ] && extra_args+=(--extra-files "$(deref_file "$src" 0644)" "etc/nixos/${root}-settings.json")
     done < <(jq -r '.roots[]?' "$MANIFEST")
+fi
+
+# Prove the closure covers this machine before anything is destroyed. See
+# lib-preflight.sh for why an incomplete closure otherwise surfaces as a failed
+# download from gnu.org, mid-install, with the disk already wiped.
+if ! preflight_offline "$FLAKE_DIR" "$HOST_ATTR" "$DISK_NAME" "$DISK_DEVICE" \
+        "$([ -d /sys/firmware/efi ] && echo true || echo false)"; then
+    echo " Full log: ${LOG}. Other consoles: Alt+F2 … F6."
+    sleep 3
+    exec bash -i
 fi
 
 echo ":: Starting disko-install (offline)…"
