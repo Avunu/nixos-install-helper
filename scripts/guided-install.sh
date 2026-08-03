@@ -58,21 +58,24 @@ gum confirm "Proceed with the install? This WIPES ${DISK_DEVICE}." || { echo "Ab
 efi_args=()
 [ -d /sys/firmware/efi ] && efi_args+=(--write-efi-boot-entries)
 
-# ── Seed: whole flake + settings overlay so reconcile applies identity ───────
+# ── Seed: whole flake + flat identity overlay so reconcile applies it ────────
+# Merge the chosen hostname into the primary module's FLAT settings file (the
+# same flat file the local flake reads, e.g. router-settings.json), preserving
+# any other committed values. Only closure-safe keys here.
 SETTINGS=$(mktemp)
-# Identity settings are merged onto the seeded settings.json the local flake
-# reads (installer/settings.json), nested under the project's primary option
-# root. Only closure-safe keys here.
-PRIMARY_ROOT=$(jq -r '.primaryRoot // ""' "$MANIFEST")
-if [ -n "$PRIMARY_ROOT" ]; then
-    jq -n --arg r "$PRIMARY_ROOT" --arg h "$HOSTNAME" '{ ($r): { hostName: $h } }' > "$SETTINGS"
+PRIMARY_PATH=$(jq -r '.primarySettingsPath // ""' "$MANIFEST")
+EXISTING="${FLAKE_DIR}/${PRIMARY_PATH}"
+if [ -n "$PRIMARY_PATH" ] && [ -f "$EXISTING" ]; then
+    jq --arg h "$HOSTNAME" '.hostName = $h' "$EXISTING" > "$SETTINGS"
 else
     jq -n --arg h "$HOSTNAME" '{ hostName: $h }' > "$SETTINGS"
 fi
 
 if [ "$FLAKE_STYLE" = "local" ]; then
     extra_args+=(--extra-files "${FLAKE_DIR}/" "etc/nixos")
-    extra_args+=(--extra-files "$SETTINGS" "etc/nixos/installer/settings.json")
+    if [ -n "$PRIMARY_PATH" ]; then
+        extra_args+=(--extra-files "$SETTINGS" "etc/nixos/${PRIMARY_PATH}")
+    fi
 fi
 
 echo ":: Installing template offline…"

@@ -13,21 +13,26 @@ gum style --border double --padding "1 2" --border-foreground 212 \
     "nixos-install-helper" "Guided deployment wizard"
 
 # ── 1. Settings (only when this project exposes install-time options) ────────
+# Each module namespace has its own FLAT settings file (IH_ROOTS).
 if [ "${IH_HAS_SETTINGS:-0}" = "1" ]; then
-    OUT="installer/settings.json"
-    if [ ! -f "$OUT" ]; then
-        gum style "No ${OUT} yet — let's create one."
-        bash "${SCRIPT_DIR}/configure.sh" "$OUT"
-    elif gum confirm "Reconfigure ${OUT}?" --default=false; then
-        bash "${SCRIPT_DIR}/configure.sh" "$OUT"
+    missing=0
+    while IFS=$'\t' read -r _root file; do
+        [ -z "$file" ] && continue
+        [ -f "$file" ] || missing=1
+    done < <(jq -r '.[] | [.root, .file] | @tsv' "${IH_ROOTS:-/dev/null}" 2>/dev/null || true)
+    if [ "$missing" = "1" ]; then
+        gum style "Some module settings files are missing — let's create them."
+        bash "${SCRIPT_DIR}/configure.sh"
+    elif gum confirm "Reconfigure module settings?" --default=false; then
+        bash "${SCRIPT_DIR}/configure.sh"
     fi
 fi
 
 # ── 2. Deployment path ───────────────────────────────────────────────────────
-choice=$(gum choose --header "How do you want to deploy?" \
-    "Network install  (nixos-anywhere over SSH — no USB)" \
-    "Unattended ISO   (pre-seeded, installs with no interaction)" \
-    "Guided ISO       (generic, choose identity on the target box)")
+options=("Network install  (nixos-anywhere over SSH — no USB)"
+         "Unattended ISO   (pre-seeded, installs with no interaction)")
+[ "${IH_GUIDED:-1}" = "1" ] && options+=("Guided ISO       (generic, choose identity on the target box)")
+choice=$(printf '%s\n' "${options[@]}" | gum choose --header "How do you want to deploy?")
 
 case "$choice" in
   Network*)

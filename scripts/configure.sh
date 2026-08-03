@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # ════════════════════════════════════════════════════════════════════════════
-#  configure.sh — render the derived JSON Schema as a gum questionnaire and write
-#  a conforming settings.json. Runs on the technician's workstation.
+#  configure.sh — render each module namespace's FLAT schema as a gum
+#  questionnaire and write a FLAT per-module settings JSON. Runs on the
+#  technician's workstation. (nixos-router's router-settings.json pattern.)
 #
 #  Env (set by the mkProject app wrapper):
-#    IH_SCHEMA       path to the derived Draft-07 schema
+#    IH_ROOTS        path to [{ root, file, schema }] — one flat file per module
 #    IH_HINTS        path to { "<dotted.path>": "disk-device" | "net-iface" }
-#    IH_HAS_SETTINGS "1" if the schema has any properties, else "0"
-#  Arg 1: output path (default ./installer/settings.json).
+#    IH_HAS_SETTINGS "1" if any module exposes options, else "0"
 # ════════════════════════════════════════════════════════════════════════════
-
-OUT="${1:-installer/settings.json}"
 
 if [ "${IH_HAS_SETTINGS:-0}" != "1" ]; then
     gum style --foreground 42 "This project exposes no install-time options — nothing to configure."
@@ -19,7 +17,6 @@ if [ "${IH_HAS_SETTINGS:-0}" != "1" ]; then
     exit 0
 fi
 
-SCHEMA=$(cat "$IH_SCHEMA")
 HINTS=$(cat "${IH_HINTS:-/dev/null}" 2>/dev/null || echo '{}')
 
 # Resolve a possibly-array JSON Schema `type` to a single primitive (nullable
@@ -91,19 +88,25 @@ collect_object() {
 }
 
 gum style --border double --padding "1 2" --border-foreground 212 \
-    "Install configuration" "Answer the prompts; a settings.json is written for the installer."
+    "Install configuration" "Answer the prompts; a flat settings file is written per module."
 
-RESULT=$(collect_object "$SCHEMA" "")
+# One FLAT settings file per module namespace (root).
+while IFS=$'\t' read -r root file schema; do
+    [ -z "$root" ] && continue
+    SCHEMA=$(cat "$schema")
+    gum style --foreground 212 "── ${root} → ${file} ──"
+    RESULT=$(collect_object "$SCHEMA" "")
 
-# Validate against the schema before writing (best-effort; non-fatal if the
-# validator is unavailable).
-if command -v check-jsonschema >/dev/null 2>&1; then
-    if ! echo "$RESULT" | check-jsonschema --schemafile "$IH_SCHEMA" /dev/stdin >/dev/null 2>&1; then
-        gum style --foreground 196 "Warning: the result did not validate against the schema (continuing)."
+    # Validate before writing (best-effort; non-fatal if the validator is absent).
+    if command -v check-jsonschema >/dev/null 2>&1; then
+        if ! echo "$RESULT" | check-jsonschema --schemafile "$schema" /dev/stdin >/dev/null 2>&1; then
+            gum style --foreground 196 "Warning: ${root} settings did not validate against the schema (continuing)."
+        fi
     fi
-fi
 
-mkdir -p "$(dirname "$OUT")"
-echo "$RESULT" | jq . > "$OUT"
-gum style --foreground 42 "Wrote ${OUT}"
-echo "Next:  nix run .#install"
+    mkdir -p "$(dirname "$file")"
+    echo "$RESULT" | jq . > "$file"
+    gum style --foreground 42 "Wrote ${file}"
+done < <(jq -r '.[] | [.root, .file, .schema] | @tsv' "$IH_ROOTS")
+
+echo "Next:  nix run .#install   (or re-run  nix run  for the full wizard)"
