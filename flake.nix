@@ -53,6 +53,18 @@
         # Offline install closure collector (flakeOutPaths + closureInfo).
         offlineClosure = a: import ./lib/offline-closure.nix ({ inherit lib; } // a);
 
+        # Boot a real installer ISO in a network-less VM and install from it.
+        # `mkProject` already wires this up as `checks.<system>.offline-install-*`;
+        # exposed here for a project that wants a second firmware/disk combination.
+        mkOfflineInstallTest =
+          a:
+          import ./lib/mk-offline-install-test.nix (
+            {
+              inherit lib nixpkgs;
+            }
+            // a
+          );
+
         # Build an installer-ISO nixosSystem directly.
         mkInstallerIso =
           a:

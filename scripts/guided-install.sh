@@ -18,17 +18,52 @@ source "${SCRIPT_DIR}/lib-preflight.sh"
 HOST_ATTR=$(jq -r '.hostAttr // "installTemplate"' "$MANIFEST")
 DISK_NAME=$(jq -r '.diskName // "main"' "$MANIFEST")
 FLAKE_STYLE=$(jq -r '.flakeStyle // "local"' "$MANIFEST")
+# The mount point the BAKED diskoScript was built for — disko writes it inside
+# the script. Left to itself disko-install would use /mnt/disko-install-root and
+# build a second copy of a script the ISO already carries, which on an appliance
+# with no stdenv is a fetch from gnu.org. See mk-installer-iso.nix.
+ROOT_MOUNT_POINT=$(jq -r '.rootMountPoint // "/mnt"' "$MANIFEST")
+
+# ── Preseeding ───────────────────────────────────────────────────────────────
+# Everything below is a gum prompt because a guided install is a conversation
+# with a technician. IH_NONINTERACTIVE turns the same script into a scripted
+# one, taking the answers from the environment instead:
+#
+#   IH_DISK_DEVICE=/dev/vda     the target disk (required)
+#   IH_ANSWERS=<file.json>      answers to the manifest's `prompts`, nested the
+#                               way the keys' dotted paths imply
+#   IH_ASSETS_DIR=<dir>         per-asset contents as <dir>/<name>; anything
+#                               absent is skipped
+#
+# It also changes what a failure does: an interactive install drops to a shell
+# on the console, which for anything driving this script is a hang. Here it is
+# the offline-install VM test (lib/mk-offline-install-test.nix), and the same
+# contract is what makes a preseeded USB install possible.
+NONINTERACTIVE=${IH_NONINTERACTIVE:-}
+
+die_or_shell() {
+    if [ -n "$NONINTERACTIVE" ]; then exit 1; fi
+    sleep 3
+    exec bash -i
+}
 
 gum style --border double --margin "1" --padding "1 2" --border-foreground 212 \
     "NixOS Guided Installer" "Identity + disk selection, then an offline install."
 
 # ── Disk selection ───────────────────────────────────────────────────────────
-mapfile -t DISKS < <(lsblk -dn -o NAME,SIZE,MODEL | awk '{printf "/dev/%s\t%s %s\n",$1,$2,$3}')
-if [ "${#DISKS[@]}" -eq 0 ]; then
-    echo "ERROR: no disks found."; exit 1
+if [ -n "$NONINTERACTIVE" ]; then
+    DISK_DEVICE=${IH_DISK_DEVICE:?IH_NONINTERACTIVE needs IH_DISK_DEVICE}
+else
+    mapfile -t DISKS < <(lsblk -dn -o NAME,SIZE,MODEL | awk '{printf "/dev/%s\t%s %s\n",$1,$2,$3}')
+    if [ "${#DISKS[@]}" -eq 0 ]; then
+        echo "ERROR: no disks found."; exit 1
+    fi
+    DISK_LINE=$(printf '%s\n' "${DISKS[@]}" | gum choose --header "Target disk (ALL DATA WIPED):")
+    DISK_DEVICE=$(printf '%s' "$DISK_LINE" | cut -f1)
 fi
-DISK_LINE=$(printf '%s\n' "${DISKS[@]}" | gum choose --header "Target disk (ALL DATA WIPED):")
-DISK_DEVICE=$(printf '%s' "$DISK_LINE" | cut -f1)
+if [ ! -b "$DISK_DEVICE" ]; then
+    echo "ERROR: target disk ${DISK_DEVICE} is not a block device."; exit 1
+fi
 
 # ── Per-machine settings ─────────────────────────────────────────────────────
 # Which questions to ask is the PROJECT's call, not this script's: the manifest's
@@ -45,7 +80,15 @@ echo '{}' > "$ANSWERS"
 SUMMARY=()
 while IFS=$'\t' read -r key prompt def; do
     [ -z "$key" ] && continue
-    val=$(gum input --header "$prompt" --placeholder "$def" --value "$def")
+    if [ -n "$NONINTERACTIVE" ]; then
+        # Preseeded: take the answer from IH_ANSWERS if it carries this key,
+        # otherwise the option's own default — the same value pressing Enter
+        # at the prompt would have accepted.
+        val=$(jq -r --arg k "$key" --arg d "$def" \
+            'getpath($k | split(".")) // $d | tostring' "${IH_ANSWERS:-/dev/null}" 2>/dev/null || echo "$def")
+    else
+        val=$(gum input --header "$prompt" --placeholder "$def" --value "$def")
+    fi
     val=${val:-$def}
     jq --arg k "$key" --arg v "$val" 'setpath($k | split("."); $v)' "$ANSWERS" > "${ANSWERS}.tmp"
     mv "${ANSWERS}.tmp" "$ANSWERS"
@@ -58,14 +101,20 @@ trap 'rm -rf "$STAGE"' EXIT
 extra_args=()
 while IFS=$'\t' read -r name target mode; do
     [ -z "$name" ] && continue
-    gum confirm "Provide asset '${name}' (→ ${target})?" || continue
-    method=$(gum choose --header "How to provide ${name}?" "Read from a file" "Paste contents")
     dst="${STAGE}/${name}"
-    if [ "$method" = "Read from a file" ]; then
-        src=$(gum file --header "Select ${name}")
+    if [ -n "$NONINTERACTIVE" ]; then
+        src="${IH_ASSETS_DIR:-/nonexistent}/${name}"
+        [ -e "$src" ] || continue
         cp "$src" "$dst"
     else
-        gum write --header "Paste ${name} (Ctrl+D when done)" > "$dst"
+        gum confirm "Provide asset '${name}' (→ ${target})?" || continue
+        method=$(gum choose --header "How to provide ${name}?" "Read from a file" "Paste contents")
+        if [ "$method" = "Read from a file" ]; then
+            src=$(gum file --header "Select ${name}")
+            cp "$src" "$dst"
+        else
+            gum write --header "Paste ${name} (Ctrl+D when done)" > "$dst"
+        fi
     fi
     chmod "${mode:-0400}" "$dst"
     extra_args+=(--extra-files "$dst" "$target")
@@ -74,7 +123,9 @@ done < <(jq -r '.assets[]? | [.name, .target, (.mode // "0400")] | @tsv' "$MANIF
 # ── Confirm ──────────────────────────────────────────────────────────────────
 gum style --border normal --padding "0 1" \
     "Disk:  ${DISK_DEVICE}" "${SUMMARY[@]}" "Style: ${FLAKE_STYLE}"
-gum confirm "Proceed with the install? This WIPES ${DISK_DEVICE}." || { echo "Aborted."; exit 1; }
+if [ -z "$NONINTERACTIVE" ]; then
+    gum confirm "Proceed with the install? This WIPES ${DISK_DEVICE}." || { echo "Aborted."; exit 1; }
+fi
 
 # ── EFI vs legacy ────────────────────────────────────────────────────────────
 efi_args=()
@@ -125,9 +176,8 @@ fi
 # box, so it is an input the ISO could not have been baked against. See
 # lib-preflight.sh.
 if ! preflight_offline "$FLAKE_DIR" "$HOST_ATTR" "$DISK_NAME" "$DISK_DEVICE" \
-        "$([ -d /sys/firmware/efi ] && echo true || echo false)"; then
-    sleep 3
-    exec bash -i
+        "$([ -d /sys/firmware/efi ] && echo true || echo false)" "$ROOT_MOUNT_POINT"; then
+    die_or_shell
 fi
 
 echo ":: Installing template offline…"
@@ -135,6 +185,7 @@ LOG=/tmp/install-helper.log
 if disko-install \
     --flake "${FLAKE_DIR}#${HOST_ATTR}" \
     --disk "${DISK_NAME}" "${DISK_DEVICE}" \
+    --mount-point "${ROOT_MOUNT_POINT}" \
     "${efi_args[@]}" \
     "${extra_args[@]}" \
     2>&1 | tee "$LOG"; then
@@ -143,7 +194,9 @@ if disko-install \
     reboot
 else
     echo "INSTALL FAILED — log: ${LOG}"
-    sleep 3
-    less "$LOG" || true
-    exec bash -i
+    if [ -z "$NONINTERACTIVE" ]; then
+        sleep 3
+        less "$LOG" || true
+    fi
+    die_or_shell
 fi

@@ -66,7 +66,19 @@ let
     # changes the installed system; the offline closure has to cover that. Empty
     # for a guided ISO, whose device is chosen on the box.
     grubDevices = lib.optional (manifest.diskDevice or "" != "") manifest.diskDevice;
+    # …and the same emptiness is what says the disko script cannot be baked
+    # either: no baked device means the technician names one, and the device is
+    # written inside the script. One condition, both consequences.
+    deviceChosenOnTarget = (manifest.diskDevice or "") == "";
   };
+
+  # The mount point the baked `diskoScript` was built for. disko-install would
+  # otherwise default to its own /mnt/disko-install-root, and rootMountPoint is
+  # baked INTO the script — so the box would build a second, identical-but-for-a
+  # -path copy of a script the ISO already carries. Shipping the value lets the
+  # boot scripts pass `--mount-point` and the preflight check the same system
+  # disko-install will actually install.
+  rootMountPoint = target.config.disko.rootMountPoint;
 in
 nixpkgs.lib.nixosSystem {
   inherit system;
@@ -118,6 +130,7 @@ nixpkgs.lib.nixosSystem {
               "installer-manifest.json".text = builtins.toJSON (
                 manifest
                 // {
+                  inherit rootMountPoint;
                   diskoInstallCli = "${disko.packages.${system}.default}/share/disko/install-cli.nix";
                 }
               );

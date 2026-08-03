@@ -32,6 +32,23 @@ HOST_ATTR=$(jq -r '.hostAttr' "$MANIFEST")
 DISK_NAME=$(jq -r '.diskName // "main"' "$MANIFEST")
 DISK_DEVICE=$(jq -r '.diskDevice // ""' "$MANIFEST")
 FLAKE_STYLE=$(jq -r '.flakeStyle // "local"' "$MANIFEST")
+# The mount point the BAKED diskoScript was built for — disko writes it inside
+# the script. Left to itself disko-install would use /mnt/disko-install-root and
+# build a second copy of a script the ISO already carries, which on an appliance
+# with no stdenv is a fetch from gnu.org. See mk-installer-iso.nix.
+ROOT_MOUNT_POINT=$(jq -r '.rootMountPoint // "/mnt"' "$MANIFEST")
+
+# This script is already unattended, but its failure path is not: it drops to a
+# root shell on the console, which for anything driving it (the offline-install
+# VM test in lib/mk-offline-install-test.nix) is an indefinite hang rather than
+# a failure. IH_NONINTERACTIVE says there is nobody at that shell.
+NONINTERACTIVE=${IH_NONINTERACTIVE:-}
+
+die_or_shell() {
+    if [ -n "$NONINTERACTIVE" ]; then exit 1; fi
+    sleep 3
+    exec bash -i
+}
 
 wait_for_enter() {
     local msg="$1" timeout="$2" prompt="$3"
@@ -148,16 +165,16 @@ fi
 # lib-preflight.sh for why an incomplete closure otherwise surfaces as a failed
 # download from gnu.org, mid-install, with the disk already wiped.
 if ! preflight_offline "$FLAKE_DIR" "$HOST_ATTR" "$DISK_NAME" "$DISK_DEVICE" \
-        "$([ -d /sys/firmware/efi ] && echo true || echo false)"; then
+        "$([ -d /sys/firmware/efi ] && echo true || echo false)" "$ROOT_MOUNT_POINT"; then
     echo " Full log: ${LOG}. Other consoles: Alt+F2 … F6."
-    sleep 3
-    exec bash -i
+    die_or_shell
 fi
 
 echo ":: Starting disko-install (offline)…"
 if disko-install \
     --flake "${FLAKE_DIR}#${HOST_ATTR}" \
     --disk "${DISK_NAME}" "${DISK_DEVICE}" \
+    --mount-point "${ROOT_MOUNT_POINT}" \
     "${efi_args[@]}" \
     "${extra_args[@]}" \
     2>&1 | tee "$LOG"; then
@@ -169,9 +186,11 @@ if disko-install \
 else
     echo ""
     echo " INSTALLATION FAILED — full log: ${LOG}"
-    echo " Opening pager (q to quit). Other consoles: Alt+F2 … F6."
-    sleep 3
-    less "$LOG" || true
-    echo " Dropping to a root shell for debugging."
-    exec bash -i
+    if [ -z "$NONINTERACTIVE" ]; then
+        echo " Opening pager (q to quit). Other consoles: Alt+F2 … F6."
+        sleep 3
+        less "$LOG" || true
+        echo " Dropping to a root shell for debugging."
+    fi
+    die_or_shell
 fi

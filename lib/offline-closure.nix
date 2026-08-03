@@ -26,6 +26,9 @@
   # onto `boot.loader.grub.devices`, which changes the system it installs. Empty
   # when the device is chosen on the box (guided) — see the note below.
   grubDevices ? [ ],
+  # True when the target device is picked ON THE BOX rather than baked (a guided
+  # ISO). Then `diskoScript` cannot be baked at all — see `trivialBuilderDeps`.
+  deviceChosenOnTarget ? false,
 }:
 let
   # Recursively collect EVERY flake input's source path. Keep only top-level
@@ -99,12 +102,55 @@ let
     (v.pkgs.closureInfo { rootPaths = [ v.config.system.build.toplevel ]; })
   ]) installVariants;
 
+  # ── The one thing a guided ISO cannot bake ─────────────────────────────────
+  # disko writes the target device path INSIDE `diskoScript`. Bake it for the
+  # template's device and you get a byte-identical path back on the box — but
+  # only if the technician picks that same device, which on a guided ISO is
+  # precisely what nobody knows in advance. There is no candidate set to bake
+  # against: the answer is whatever is plugged into the machine.
+  #
+  # So ship what BUILDING one costs instead of guessing. `.inputDerivation` is
+  # nixpkgs' name for exactly that question — a derivation whose output
+  # REFERENCES every build input of the one it came from — so its closure is
+  # "everything needed to build this and nothing else". Taken from disko's own
+  # `system.build` outputs rather than reconstructed here, so it cannot drift
+  # from the writer disko actually uses:
+  #
+  #   diskoScript  the `ln -s …/bin/disko $out` wrapper
+  #   formatMount  the script package the wrapper points at — the one with the
+  #                device path in it, and the one that must be rebuilt
+  #
+  # Measured on nixos-nano-desktop: 40 store paths, 335 MB uncompressed, on top
+  # of a closure that already carries every tool the script's PATH names. Most
+  # of it is a C compiler, and not because anything is compiled — nixpkgs'
+  # script writer lists `makeBinaryWrapper` as a build input, and that hook
+  # carries cc in its runtime closure whether or not a wrapper is written.
+  #
+  # It is a real cost and it is bounded: it does not scale with the project, and
+  # it is the difference between a guided ISO that installs offline and one that
+  # dies fetching a bison tarball from gnu.org with the disk already wiped.
+  trivialBuilderDeps = lib.optionals deviceChosenOnTarget (
+    map (d: d.inputDerivation) (
+      lib.filter (d: d != null) [
+        target.config.system.build.diskoScript
+        target.config.system.build.formatMount or null
+      ]
+    )
+  );
+
   installDeps = [
     target.config.system.build.toplevel
     target.config.system.build.diskoScript
+    # `disko-install --mode mount` builds `-A mountScript` instead of
+    # `-A diskoScript` — the same install against an existing layout, without
+    # reformatting. It is a supported mode and the obvious way to re-run a
+    # failed install or refresh a system in place, and without this the ISO can
+    # only ever do the destructive one.
+    target.config.system.build.mountScript
     target.pkgs.perlPackages.ConfigIniFiles
     target.pkgs.perlPackages.FileSlurp
   ]
+  ++ trivialBuilderDeps
   ++ variantRoots
   ++ extraPaths
   ++ flakeOutPaths;

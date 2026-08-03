@@ -457,7 +457,10 @@ let
     embedded = a.resolvedSource != null;
   }) resolvedAssets;
 
-  mkIso =
+  # The installer-ISO nixosSystem. Returned as a SYSTEM rather than an isoImage
+  # so the offline-install VM test can extend it (with the test driver's
+  # backdoor) and still be testing this exact image — see mk-offline-install-test.nix.
+  mkIsoSystem =
     {
       target,
       mode,
@@ -501,7 +504,7 @@ let
           "${frameworkSelf}/scripts/unattended-install.sh";
       embeddedAssets = embed;
       inherit dropZfs isoModules squashfsCompression;
-    }).config.system.build.isoImage;
+    });
 
   primaryRoot = if resolvedRoots == [ ] then null else builtins.head resolvedRoots;
 
@@ -588,6 +591,50 @@ let
     );
   guidedMissingDefaults = lib.concatMap (r: requiredPaths "${r}." (perRootSchema r)) resolvedRoots;
 
+  # ── The two installer ISOs, as systems ─────────────────────────────────────
+  unattendedIsoSystem = mkIsoSystem {
+    target = installSystem;
+    mode = "unattended";
+    embed = embeddedAssets;
+    device = resolvedDiskDevice;
+    inherit settingsDir localFlakeNix localModuleNix;
+  };
+
+  guidedIsoSystem = mkIsoSystem {
+    target = templateSystem;
+    mode = "guided";
+    embed = [ ];
+    device = "";
+    inherit settingsDir localFlakeNix localModuleNix;
+  };
+
+  # ── Offline-install VM checks ──────────────────────────────────────────────
+  # `nix build .#checks.<system>.offline-install-guided` boots the ISO itself in
+  # a network-less VM and installs to a blank disk. What it proves is the one
+  # thing the flake cannot: that the baked closure covers the system
+  # disko-install actually derives ON THE BOX, where the firmware mode and the
+  # target device are inputs the image was built without. See
+  # mk-offline-install-test.nix.
+  mkOfflineTest =
+    a:
+    import ./mk-offline-install-test.nix (
+      {
+        inherit lib nixpkgs system;
+      }
+      // a
+    );
+
+  # The guided ISO asks; the test answers. Values are the schema defaults where
+  # the project gave one, so the test seeds what a technician pressing Enter
+  # would. They land in a JSON file for the first-boot reconcile and never move
+  # the closure, so any string would do — these just read like a real install.
+  guidedAnswers = lib.listToAttrs (
+    map (q: {
+      name = q.key;
+      value = if q.default != "" then q.default else "ih-test";
+    }) guidedQuestions
+  );
+
   # ── Apps (gum-driven; run from the project working tree) ───────────────────
   mkApp = name: runtimeInputs: {
     type = "app";
@@ -636,13 +683,7 @@ in
   packages.${system} = {
     # Nested union schema (back-compat).
     settingsSchema = schemaJson;
-    installerIso = mkIso {
-      target = installSystem;
-      mode = "unattended";
-      embed = embeddedAssets;
-      device = resolvedDiskDevice;
-      inherit settingsDir localFlakeNix localModuleNix;
-    };
+    installerIso = unattendedIsoSystem.config.system.build.isoImage;
   }
   # Per-root FLAT schema packages: `settingsSchema-<root>` (e.g. what
   # nixos-router's Cockpit build diffs its committed router-settings.schema.json
@@ -672,13 +713,45 @@ in
           only the per-host unattended ISO and the network deploy.
         ''
       else
-        mkIso {
-          target = templateSystem;
-          mode = "guided";
-          embed = [ ];
-          device = "";
-          inherit settingsDir localFlakeNix localModuleNix;
-        };
+        guidedIsoSystem.config.system.build.isoImage;
+  };
+
+  # ── Checks ─────────────────────────────────────────────────────────────────
+  # Heavy by nature: each one builds a real ISO and boots it. They are the only
+  # place the offline claim is actually tested, so they are checks and not a
+  # side package.
+  checks.${system} = {
+    offline-install-unattended = mkOfflineTest {
+      name = "offline-install-unattended";
+      isoSystem = unattendedIsoSystem;
+      installScript = "${frameworkSelf}/scripts/unattended-install.sh";
+      # The unattended ISO installs to the device baked into its manifest, so
+      # the emulated disk has to BE that device — right down to the bus, since
+      # /dev/sda and /dev/vda are different qemu hardware.
+      diskDevice = if resolvedDiskDevice != "" then resolvedDiskDevice else "/dev/vda";
+      # This script is already unattended; the flag only says there is nobody at
+      # the debug shell it drops to on failure, so a failure ends the test
+      # instead of waiting out its timeout.
+      scriptEnv.IH_NONINTERACTIVE = "1";
+    };
+  }
+  // lib.optionalAttrs (guided && guidedMissingDefaults == [ ]) {
+    offline-install-guided = mkOfflineTest {
+      name = "offline-install-guided";
+      isoSystem = guidedIsoSystem;
+      installScript = "${frameworkSelf}/scripts/guided-install.sh";
+      diskDevice = "/dev/vda";
+      answers = guidedAnswers;
+      # disko writes the chosen device into `diskoScript`, and a guided ISO by
+      # definition does not know it — so that one script is built on the box,
+      # from the trivial-builder deps offline-closure.nix ships for exactly this.
+      rebuildableOnTarget = [ "disko" ];
+      scriptEnv = {
+        IH_NONINTERACTIVE = "1";
+        IH_DISK_DEVICE = "/dev/vda";
+        IH_ANSWERS = "/tmp/ih-answers.json";
+      };
+    };
   };
 
   apps.${system} = {
