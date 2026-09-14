@@ -40,8 +40,32 @@ args@{
   assets ? [ ],
   # gum widget hints keyed by dotted settings path: "diskDevice" = "disk-device".
   hints ? { },
-  # Settings that change the closure → locked to template defaults on guided ISO.
+  # Superseded by `templateSettings` below and no longer read; accepted so a
+  # project that still passes it keeps evaluating.
   closureAffecting ? [ ],
+  # Values baked into the GUIDED template and seeded into the installed machine's
+  # settings file, so the system the ISO installs is the system the ISO carries.
+  #
+  # For closure-heavy defaults an image someone downloads should not ship — an
+  # office suite is the motivating case: a full desktop closure at squashfs
+  # compression lands near GitHub's 2 GiB release-asset cap, and the office
+  # suite is a third of it. Baking the lighter value alone would not be enough:
+  # the first-boot reconcile rebuilds /etc/nixos against the project's DEFAULTS,
+  # and would immediately try to fetch what the ISO left out, on a machine that
+  # was just installed offline. Seeding the same value into the settings file is
+  # what keeps the two in agreement — the reconcile has nothing to fetch, the
+  # offline claim stays true, and turning the option back on is a settings
+  # change the owner makes later, online. The project's own settings UI is the
+  # right place to say that it needs a network; the guided installer's summary
+  # says which values these are.
+  #
+  # Root-keyed and flat, like settingsFiles:
+  #   templateSettings.nanoDesktop = { officeSuite = "none"; };
+  # Applied as `{ <root> = mkDefault <flat> }` to the template, and merged
+  # UNDER the technician's prompt answers into `<root>-settings.json` (an
+  # answer to a prompt always wins). Only the primary root's values are seeded;
+  # the synthesized flake reads one settings file.
+  templateSettings ? { },
   # Technician-authored FLAT per-root settings files, keyed by option root:
   #   settingsFiles.router = ./local/router-settings.json
   # Each file holds that root's option VALUES at top level (no `<root>` wrapper) and
@@ -110,9 +134,11 @@ let
       ];
     };
 
-  # Template (settings-free) system — evaluated FIRST so roots are known before we
-  # read the per-root settings files.
-  templateSystem = mkInstallSystem { };
+  # Template system — evaluated FIRST so roots are known before we read the
+  # per-root settings files. Settings-free but for `templateSettings`, which is
+  # exactly the set of values the guided installer seeds alongside the answers,
+  # so what this bakes and what the installed machine's flake evaluates agree.
+  templateSystem = mkInstallSystem templateSettings;
 
   # ── Auto-detect technician-facing roots ────────────────────────────────────
   # Candidate roots = top-level option namespaces the install modules ADD beyond
@@ -496,6 +522,9 @@ let
         roots = resolvedRoots;
         primaryRoot = primaryRoot;
         prompts = guidedQuestions;
+        # Flat, for the primary root: what guided-install.sh merges under the
+        # answers, and lists in its summary as "not on this media".
+        templateSettings = if primaryRoot == null then { } else templateSettings.${primaryRoot} or { };
       };
       installScript =
         if mode == "guided" then
