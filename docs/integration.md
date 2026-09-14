@@ -195,3 +195,22 @@ and pass `--impure` yourself.
 
 ¹ Guided prompts are limited to identity/disk/network/secrets (closure-safe);
 feature toggles are fixed in the baked template.
+
+### Leaving something off the guided ISO: `templateSettings`
+
+A guided ISO carries the template's whole closure, and a full desktop closure
+lands near GitHub's 2 GiB release-asset cap. `templateSettings` bakes a lighter
+value into the template **and** seeds it into the installed machine's settings
+file, so the system the ISO installs is the system the ISO carries and the
+first-boot reconcile has nothing to fetch:
+
+```nix
+templateSettings.nanoDesktop.officeSuite = "none";
+```
+
+Root-keyed and flat, like `settingsFiles`; merged *under* the prompt answers, so
+an answer always wins. The guided installer lists these in its confirmation
+summary as "not on this media". The owner turns them back on later, online,
+through whatever edits `<root>-settings.json` — the project's settings UI should
+say that a network is needed, since this framework cannot know which values are
+heavy.

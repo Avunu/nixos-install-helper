@@ -95,6 +95,28 @@ while IFS=$'\t' read -r key prompt def; do
     SUMMARY+=("${key}: ${val}")
 done < <(jq -r '.prompts[]? | [.key, .prompt, (.default // "")] | @tsv' "$MANIFEST")
 
+# ── Template-baked settings ──────────────────────────────────────────────────
+# mkProject's `templateSettings`: values the guided template was BUILT with so
+# the ISO stays small (an office suite, typically). They go into the settings
+# file underneath the answers — `$t * .` is a recursive merge where the right
+# side, the answers, wins — so that the first-boot reconcile evaluates the same
+# system the ISO carries and has nothing to fetch. Leave them out and the
+# reconcile would rebuild against the project's defaults and try to download
+# the very thing the ISO omitted, on a machine that was just installed offline.
+#
+# They are shown in the summary as what they are: settings the owner can change
+# later, online. Flattened to dotted keys so a nested value reads the same way
+# the prompts above do.
+TEMPLATE_SETTINGS=$(jq -c '.templateSettings // {}' "$MANIFEST")
+if [ "$TEMPLATE_SETTINGS" != "{}" ]; then
+    jq --argjson t "$TEMPLATE_SETTINGS" '$t * .' "$ANSWERS" > "${ANSWERS}.tmp"
+    mv "${ANSWERS}.tmp" "$ANSWERS"
+    while IFS=$'\t' read -r key val; do
+        [ -z "$key" ] && continue
+        SUMMARY+=("${key}: ${val}   (not on this media; change it later, online)")
+    done < <(jq -r '[paths(scalars) as $p | [($p | map(tostring) | join(".")), (getpath($p) | tostring)]] | .[] | @tsv' <<< "$TEMPLATE_SETTINGS")
+fi
+
 # ── Secret assets (provided at install time; ISO stays generic) ──────────────
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
