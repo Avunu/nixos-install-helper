@@ -108,6 +108,12 @@ nixpkgs.lib.nixosSystem {
           pkgs.gnugrep
           pkgs.gnused
           pkgs.systemd # reboot / systemctl
+          # unattended-install.sh / guided-install.sh's die_or_shell() falls back
+          # to a bare `exec bash -i` on any failure (a short offline closure, a
+          # missing disk, disko-install erroring). Without bash on this PATH that
+          # exec itself fails ("bash: exec: bash: not found"), hiding whatever the
+          # real failure was behind a confusing "bash not found" error.
+          pkgs.bashInteractive
         ]
         ++ extraSystemPackages;
       in
