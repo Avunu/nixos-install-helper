@@ -293,6 +293,15 @@ let
   # `{ <root> = mkDefault <flat> }`, so a Cockpit user editing the file can only touch
   # that root's typed options (the security boundary), never arbitrary system config.
   #
+  # A project whose options change shape between releases can export a settings
+  # loader, `lib.settingsModules.<root>` (settings-file path → NixOS module), that
+  # upgrades JSON written for an older release before it reaches the options. The
+  # flake uses it for that root when the upstream has one. That is decided when the
+  # MACHINE evaluates, not when the ISO is built, so a machine installed before its
+  # project added a loader picks it up on its next upgrade — the seeded flake.nix
+  # is never rewritten, so this is the only way it ever could. The loader is
+  # upstream code and must keep the JSON scoped under its root.
+  #
   # Module names are derived from the option roots the project also exports as
   # `nixosModules.<root>` (devWorkstation → nixosModules.devWorkstation). This
   # ignores inline installModules entries (e.g. router's `{ router.cockpit... }`).
@@ -373,11 +382,22 @@ let
               ...
             }@inputs:
             let
-              load =
+              # The project's settings loader for a root, or the JSON applied
+              # as plain defaults when it has none (see mk-project.nix).
+              settingsFor =
                 root:
-                builtins.mapAttrs (_: nixpkgs.lib.mkDefault) (
-                  builtins.fromJSON (builtins.readFile (./. + "/''${root}-settings.json"))
-                );
+                let
+                  file = ./. + "/''${root}-settings.json";
+                  loader = ((${upstreamInputName}.lib or { }).settingsModules or { }).''${root} or null;
+                in
+                if loader != null then
+                  loader file
+                else
+                  {
+                    ''${root} = builtins.mapAttrs (_: nixpkgs.lib.mkDefault) (
+                      builtins.fromJSON (builtins.readFile file)
+                    );
+                  };
               host = nixpkgs.lib.nixosSystem {
                 system = "${system}";
                 # ./local.nix reaches every input above as `inputs`, so pulling a
@@ -387,7 +407,7 @@ let
         ${lib.concatMapStringsSep "\n" (
           m: "          ${upstreamInputName}.nixosModules.${m}"
         ) localModuleNames}
-        ${lib.concatMapStringsSep "\n" (r: "          { ${r} = load \"${r}\"; }") resolvedRoots}
+        ${lib.concatMapStringsSep "\n" (r: "          (settingsFor \"${r}\")") resolvedRoots}
                 ]
                 # Machine-local configuration (extra packages, per-host tweaks).
                 # Optional, so a deleted local.nix can never break a rebuild.

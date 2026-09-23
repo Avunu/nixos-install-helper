@@ -77,6 +77,35 @@ flat files into `/etc/nixos/<root>-settings.json` and the synthesized flake appl
 each **only** under its root, a live editor (e.g. Cockpit writing that file) can only
 affect that root's typed options — never arbitrary system config.
 
+### Upgrading settings across releases: `lib.settingsModules.<root>`
+
+An installed machine keeps its settings file across upgrades, so it can still hold
+a shape an older release wrote after an option was renamed or reshaped. Imported
+as plain defaults, that fails the machine's next rebuild on an option that no
+longer exists.
+
+A project whose options change shape can export a loader per root from its flake:
+
+```nix
+# In the project's flake outputs:
+lib.settingsModules.<root> = path: { lib, ... }: {
+  <root> = lib.mkDefault (upgrade (builtins.fromJSON (builtins.readFile path)));
+};
+```
+
+It takes the settings-file path and returns a NixOS module. The synthesized
+`/etc/nixos/flake.nix` uses it for that root whenever the upstream exports one, and
+falls back to plain `mkDefault` otherwise. The check happens when the machine
+evaluates its flake, not when the ISO is built. So a machine installed before
+the project added a loader starts using it on its next upgrade; the seeded
+`flake.nix` itself is never rewritten.
+
+The loader is upstream code, so the security boundary above is now its job: it
+must apply the JSON only under its own root. nixos-router's
+`lib/settings.nix` is a complete example. It upgrades old shapes, and has the
+module rewrite the file on disk so the settings editor only ever sees the
+current format.
+
 ## 3. Use it
 
 A single entrypoint drives everything — collect settings (if the project has any),
@@ -147,8 +176,10 @@ and pass `--impure` yourself.
   # nixosConfigurations."${host.config.networking.hostName}" = host;  (+ `default` alias)
   # specialArgs = { inherit inputs; };
   # modules = [ nixos-nano-desktop.nixosModules.<root>
-  #             { <root> = mapAttrs mkDefault (fromJSON ./<root>-settings.json); } ]
-  #           ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
+  #             (nixos-nano-desktop.lib.settingsModules.<root> ./<root>-settings.json)
+  #             # …or, without a project loader:
+  #             # { <root> = mapAttrs mkDefault (fromJSON ./<root>-settings.json); }
+  #           ] ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix;
   ```
 
   The input is named after the **repo** in your `upstream` ref (`github:Owner/repo`
