@@ -192,6 +192,21 @@ and pass `--impure` yourself.
   project also exports as `nixosModules.<root>`). Ongoing updates just track
   upstream: `nixos-rebuild switch --flake /etc/nixos` (bare — resolves by hostname).
 
+  **Where nixpkgs comes from.** By default the seeded flake has its own
+  `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"`, and the upstream input
+  follows it. A `nix flake update` on the machine then moves nixpkgs to that
+  branch's HEAD, independently of the rev your project locked. Pass
+  `nixpkgsFromUpstream = true` to flip it:
+
+  ```nix
+  inputs.<repo>.url = "github:Owner/repo";
+  inputs.nixpkgs.follows = "<repo>/nixpkgs";
+  ```
+
+  The machine then runs the nixpkgs your project's `flake.lock` pins, which is the
+  one your CI built and tested. It is also the one you pushed to a binary cache,
+  if you have one. Updating the upstream input is what moves it forward.
+
   **`local.nix`** is the machine's own escape hatch, seeded empty-but-annotated and
   never rewritten by an upgrade. The typed JSON settings can only carry that root's
   *serializable* options, so the most common customization of all — "install one
