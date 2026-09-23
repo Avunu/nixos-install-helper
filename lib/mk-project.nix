@@ -24,6 +24,14 @@ args@{
   # minimal then autoUpgrades to `deployedConfiguration`.
   flakeStyle ? "local",
   upstream ? null, # github:Owner/repo  (local style)
+  # Where the synthesized local flake's nixpkgs comes from. false (the default):
+  # its own `nixos-unstable` input, which `upstream` follows, so every
+  # `nix flake update` on the machine moves nixpkgs to that branch's HEAD
+  # independently of the project. true: `nixpkgs.follows = "<upstream>/nixpkgs"`,
+  # so the machine runs the nixpkgs rev the project locked — the one its CI
+  # built, tested and (if it has one) pushed to a binary cache — and updating
+  # the upstream input is what moves it.
+  nixpkgsFromUpstream ? false,
   deployedConfiguration ? null, # github:Owner/repo#attr (remote style)
   # Schema root override; null → auto-detect namespaces declared by the project.
   optionRoots ? null,
@@ -363,6 +371,20 @@ let
     else
       cleaned;
 
+  # The synthesized flake's `inputs` lines; see `nixpkgsFromUpstream`.
+  localFlakeInputs =
+    if nixpkgsFromUpstream then
+      [
+        ''${upstreamInputName}.url = "${upstream}";''
+        ''nixpkgs.follows = "${upstreamInputName}/nixpkgs";''
+      ]
+    else
+      [
+        ''nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";''
+        ''${upstreamInputName}.url = "${upstream}";''
+        ''${upstreamInputName}.inputs.nixpkgs.follows = "nixpkgs";''
+      ];
+
   # Built lazily: null unless local style with an upstream, so it never evaluates
   # for remote projects (cocalico) or when there is nothing to reference.
   localFlakeNix =
@@ -370,9 +392,7 @@ let
       pkgs.writeText "flake.nix" ''
         {
           inputs = {
-            nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-            ${upstreamInputName}.url = "${upstream}";
-            ${upstreamInputName}.inputs.nixpkgs.follows = "nixpkgs";
+            ${lib.concatStringsSep "\n    " localFlakeInputs}
           };
           outputs =
             {
