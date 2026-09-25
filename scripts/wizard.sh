@@ -61,6 +61,18 @@ if [ "${allow_impure}" = "1" ]; then
         impure=(--impure)
         echo ":: env-sourced secrets detected — building --impure"
     fi
+    # An unattended ISO cannot ask on the box, so a required asset missing here
+    # would install a machine without it. Refuse before spending the build.
+    missing=()
+    while IFS=$'\t' read -r name env; do
+        [ -z "$name" ] && continue
+        [ -n "${!env:-}" ] || missing+=("${name} (\$${env})")
+    done < <(jq -r '.[]? | select(.required == true and .source.env != null and .source.file == null) | [.name, .source.env] | @tsv' "${IH_ASSETS:-/dev/null}" 2>/dev/null || true)
+    if [ "${#missing[@]}" -gt 0 ]; then
+        gum style --foreground 196 "Required asset(s) not set: ${missing[*]}" \
+            "Enter the project's devShell (direnv) so they are exported, then re-run."
+        exit 1
+    fi
 fi
 
 # Build in the foreground with live logs — a `gum spin` wrapper here would hide
