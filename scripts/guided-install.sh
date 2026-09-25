@@ -173,10 +173,12 @@ efi_args=()
 # back to a bare settings.json if the project declares no roots.
 SETTINGS="$ANSWERS"
 PRIMARY_ROOT=$(jq -r '.primaryRoot // ""' "$MANIFEST")
-# mktemp is 0600 and disko-install's `cp -a` preserves it. This is the file the
-# machine's owner (and Cockpit, where a project ships one) edits to change any of
-# these settings later, so it lands 0644 like the flake beside it.
-chmod 0644 "$SETTINGS"
+# mktemp is 0600 and disko-install's `cp -a` preserves it. Keep the on-disk copy
+# root-only: the settings can carry a bootstrap secret (an initial password). That
+# is defense in depth, not secrecy — a rebuild copies the flake source, this file
+# included, into the world-readable Nix store. The owner edits it as root (sudo,
+# or Cockpit's administrative access) anyway.
+chmod 0600 "$SETTINGS"
 
 if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; then
     # /etc/installer-local-flake/flake.nix is an environment.etc symlink into
