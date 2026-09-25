@@ -154,10 +154,12 @@ if [ "$FLAKE_STYLE" = "local" ] && [ -f /etc/installer-local-flake/flake.nix ]; 
     if [ -f /etc/installer-local-flake/local.nix ]; then
         extra_args+=(--extra-files "$(deref_file /etc/installer-local-flake/local.nix 0644)" "etc/nixos/local.nix")
     fi
+    # Root-only on disk: the settings can carry a bootstrap secret (an initial
+    # password). Defense in depth only — a rebuild copies them into the Nix store.
     while IFS= read -r root; do
         [ -z "$root" ] && continue
         src="/etc/installer-settings/${root}-settings.json"
-        [ -f "$src" ] && extra_args+=(--extra-files "$(deref_file "$src" 0644)" "etc/nixos/${root}-settings.json")
+        [ -f "$src" ] && extra_args+=(--extra-files "$(deref_file "$src" 0600)" "etc/nixos/${root}-settings.json")
     done < <(jq -r '.roots[]?' "$MANIFEST")
 fi
 
