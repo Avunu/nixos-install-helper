@@ -121,26 +121,40 @@ fi
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 extra_args=()
-while IFS=$'\t' read -r name target mode; do
+while IFS=$'\t' read -r name target mode required; do
     [ -z "$name" ] && continue
     dst="${STAGE}/${name}"
     if [ -n "$NONINTERACTIVE" ]; then
         src="${IH_ASSETS_DIR:-/nonexistent}/${name}"
-        [ -e "$src" ] || continue
+        if [ ! -e "$src" ]; then
+            if [ "$required" = "true" ]; then
+                echo "ERROR: required asset '${name}' not found in ${IH_ASSETS_DIR:-IH_ASSETS_DIR}." >&2
+                exit 1
+            fi
+            continue
+        fi
         cp "$src" "$dst"
     else
-        gum confirm "Provide asset '${name}' (→ ${target})?" || continue
-        method=$(gum choose --header "How to provide ${name}?" "Read from a file" "Paste contents")
-        if [ "$method" = "Read from a file" ]; then
-            src=$(gum file --header "Select ${name}")
-            cp "$src" "$dst"
-        else
-            gum write --header "Paste ${name} (Ctrl+D when done)" > "$dst"
+        # A required asset (the agenix key) is asked for until it is given: the
+        # installed machine cannot decrypt its secrets without it.
+        if [ "$required" != "true" ]; then
+            gum confirm "Provide asset '${name}' (→ ${target})?" || continue
         fi
+        while :; do
+            method=$(gum choose --header "How to provide ${name} (→ ${target})?" "Read from a file" "Paste contents")
+            if [ "$method" = "Read from a file" ]; then
+                src=$(gum file --header "Select ${name}")
+                cp "$src" "$dst"
+            else
+                gum write --header "Paste ${name} (Ctrl+D when done)" > "$dst"
+            fi
+            [ "$required" != "true" ] || [ -s "$dst" ] && break
+            gum style --foreground 196 "'${name}' is required — it cannot be empty."
+        done
     fi
     chmod "${mode:-0400}" "$dst"
     extra_args+=(--extra-files "$dst" "$target")
-done < <(jq -r '.assets[]? | [.name, .target, (.mode // "0400")] | @tsv' "$MANIFEST")
+done < <(jq -r '.assets[]? | [.name, .target, (.mode // "0400"), (.required // false | tostring)] | @tsv' "$MANIFEST")
 
 # ── Confirm ──────────────────────────────────────────────────────────────────
 gum style --border normal --padding "0 1" \

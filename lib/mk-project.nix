@@ -265,8 +265,11 @@ let
       file =
         if src ? file && src.file != null then
           src.file
+        # An env value has usually lost its trailing newline to `$(cat …)`
+        # (agenix-shell exports that way); put it back, since OpenSSH refuses a
+        # PEM private key without one. deploy.sh does the same.
         else if src ? env && envVal != "" then
-          builtins.toFile a.name envVal
+          builtins.toFile a.name (if lib.hasSuffix "\n" envVal then envVal else envVal + "\n")
         else
           null;
     in
@@ -277,6 +280,36 @@ let
     source = a.resolvedSource;
     mode = a.mode or "0400";
   }) (lib.filter (a: a.resolvedSource != null) resolvedAssets);
+
+  # Required assets the unattended ISO would ship WITHOUT. A missing agenix key is
+  # not a cosmetic gap: the installed machine boots, every secret fails to decrypt,
+  # and nothing says why until something downstream (a tunnel, a GitHub fetch)
+  # breaks. Under an impure eval (`builtins ? currentTime`) the builder meant to
+  # embed and the source is simply absent — fail the build. A pure eval can never
+  # resolve an env source, so there it only warns, which keeps `nix flake check`
+  # evaluating the package on projects that declare required assets.
+  missingRequiredAssets = lib.filter (
+    a: (a.required or false) && a.resolvedSource == null
+  ) resolvedAssets;
+  missingRequiredMessage = ''
+    required installer asset(s) not resolved at build time:
+      ${lib.concatMapStringsSep "\n  " (
+        a:
+        "${a.name} → ${a.target}"
+        + lib.optionalString (
+          (a.source or { }) ? env
+        ) " (export ${a.source.env}, e.g. by entering the project devShell)"
+      ) missingRequiredAssets}
+    The unattended ISO would install a machine without them.
+  '';
+  guardRequiredAssets =
+    drv:
+    if missingRequiredAssets == [ ] then
+      drv
+    else if builtins ? currentTime then
+      throw "nixos-install-helper: ${missingRequiredMessage}"
+    else
+      lib.warn "nixos-install-helper: ${missingRequiredMessage}" drv;
 
   schemaJson = pkgs.writeText "settings.schema.json" (builtins.toJSON settingsSchema);
 
@@ -315,7 +348,7 @@ let
   # ignores inline installModules entries (e.g. router's `{ router.cockpit... }`).
   localModuleNames =
     let
-      fromRoots = lib.filter (n: self.nixosModules ? ${n}) resolvedRoots;
+      fromRoots = lib.filter (n: (self.nixosModules or { }) ? ${n}) resolvedRoots;
     in
     if fromRoots != [ ] then fromRoots else [ "default" ];
 
@@ -520,6 +553,7 @@ let
   assetTargets = map (a: {
     inherit (a) name target;
     mode = a.mode or "0400";
+    required = a.required or false;
     embedded = a.resolvedSource != null;
   }) resolvedAssets;
 
@@ -722,6 +756,13 @@ let
           export IH_DISK_NAME=${diskName}
           export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
           export IH_GUIDED=${if guided then "1" else "0"}
+          ${lib.optionalString (localFlakeNix != null) ''
+            # Local style: what a network install seeds into /etc/nixos, the same
+            # synthesized flake + placeholder module + per-root settings the ISOs seed.
+            export IH_LOCAL_FLAKE_NIX=${localFlakeNix}
+            export IH_LOCAL_MODULE_NIX=${localModuleNix}
+            export IH_ROOTS=${pkgs.writeText "roots.json" (builtins.toJSON resolvedRoots)}
+          ''}
           # Invoke through bash explicitly: scripts copied into the store from git
           # keep mode 0644 (non-executable), so exec'ing them directly fails with
           # "Permission denied". bash <path> needs no executable bit.
@@ -752,7 +793,7 @@ in
   packages.${system} = {
     # Nested union schema (back-compat).
     settingsSchema = schemaJson;
-    installerIso = unattendedIsoSystem.config.system.build.isoImage;
+    installerIso = guardRequiredAssets unattendedIsoSystem.config.system.build.isoImage;
   }
   # Per-root FLAT schema packages: `settingsSchema-<root>` (e.g. what
   # nixos-router's Cockpit build diffs its committed router-settings.schema.json

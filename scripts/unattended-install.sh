@@ -131,6 +131,20 @@ deref_file() {
     printf '%s' "$out"
 }
 
+# ── Required assets the image was built without ──────────────────────────────
+# mk-project fails an impure build that is missing one, but a pure build only
+# warns (it cannot resolve env sources at all). Installing anyway would wipe the
+# disk for a machine that cannot decrypt its secrets, so a real boot stops here;
+# the offline VM test (IH_NONINTERACTIVE) has no secrets to decrypt and proceeds.
+missing_required=$(jq -r '[.assets[]? | select(.required == true and (.embedded | not)) | .name] | join(", ")' "$MANIFEST")
+if [ -n "$missing_required" ]; then
+    echo "!! This ISO was built WITHOUT required asset(s): ${missing_required}"
+    if [ -z "$NONINTERACTIVE" ]; then
+        echo "   Rebuild it from the project's devShell (so the asset is exported). Nothing was changed."
+        die_or_shell
+    fi
+fi
+
 # ── Build the --extra-files list ─────────────────────────────────────────────
 extra_args=()
 # Embedded secret assets → their target paths on the installed system.

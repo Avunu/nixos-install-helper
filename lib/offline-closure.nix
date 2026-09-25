@@ -35,16 +35,29 @@ let
   # store paths; relative-path inputs resolve to subpaths of a flake already
   # shipped via its own source, while their transitive github inputs are still
   # collected by the recursion.
+  #
+  # An input can lead back to one of its ancestors: `inputs.darwin.follows = ""`
+  # (the usual way to drop an input you do not need) makes it the ROOT flake. So
+  # the walk carries the chain of sources above it and does not descend into one
+  # it is already inside, which would otherwise recurse until the stack overflows.
   flakeOutPaths =
     let
       collector =
-        parent:
+        ancestors: parent:
         map (
-          child: [ child.outPath ] ++ (if child ? inputs && child.inputs != { } then collector child else [ ])
+          child:
+          let
+            p = toString child.outPath;
+          in
+          if builtins.elem p ancestors then
+            [ ]
+          else
+            [ child.outPath ]
+            ++ (if child ? inputs && child.inputs != { } then collector (ancestors ++ [ p ]) child else [ ])
         ) (lib.attrValues (parent.inputs or { }));
     in
     lib.filter (p: builtins.match "/nix/store/[^/]+" (toString p) != null) (
-      lib.unique (lib.flatten (collector flakeSelf))
+      lib.unique (lib.flatten (collector [ (toString flakeSelf.outPath) ] flakeSelf))
     );
 
   # ── What disko-install ACTUALLY installs ───────────────────────────────────

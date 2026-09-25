@@ -133,6 +133,27 @@ export agenix__key="$(cat ~/.config/agenix/key)"
 nix run        # → Unattended ISO
 ```
 
+The tidy way to have it exported is [agenix-shell](https://github.com/aciceri/agenix-shell):
+keep the key itself in the repo as an age file encrypted to the operators
+(`secrets/key.age`), and source `agenix-shell.lib.installationScript` from the
+devShell's `shellHook`. Entering the shell (direnv `use flake`) decrypts it into
+`$agenix__key` — the name agenix-shell derives from a secret called `agenix-key`.
+
+### Required assets
+
+`required = true` means the machine must not be installed without the asset:
+
+| Path | Missing required asset |
+|------|------------------------|
+| Unattended ISO (build) | impure build fails; pure build warns (it cannot read env) |
+| Unattended ISO (boot) | stops before touching the disk (the offline VM test only warns) |
+| Wizard → Unattended | refuses to build until the env var is exported |
+| Guided ISO | asks until it is provided; no "skip" |
+| Network install | prompts for it; declining aborts |
+
+Optional assets keep the old behaviour: embedded or pushed when available, skipped
+when not.
+
 ## What makes an option technician-facing?
 
 The schema is derived from the **options your install modules declare**, filtered to:
@@ -241,6 +262,13 @@ and pass `--impure` yourself.
 
 ¹ Guided prompts are limited to identity/disk/network/secrets (closure-safe);
 feature toggles are fixed in the baked template.
+
+A network install seeds `/etc/nixos` (local style) with the same synthesized flake,
+`local.nix` and per-root settings the ISOs do, so the machine can rebuild itself
+afterwards. nixos-anywhere evaluates `--flake` purely, so when `installer/*-settings.json`
+exist `deploy` builds the disko script and system itself (`--impure`, with
+`IH_SETTINGS_DIR`) and passes them as `--store-paths` — the settings are never
+silently dropped for a network install either.
 
 ### Leaving something off the guided ISO: `templateSettings`
 
