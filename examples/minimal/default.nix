@@ -14,7 +14,8 @@ let
     {
       options.demo = with lib; {
         hostName = mkOption {
-          type = types.str;
+          # strMatching → a JSON Schema `pattern`, anchored.
+          type = types.strMatching "[a-z0-9][a-z0-9-]*";
           default = "demo";
           description = "Machine hostname.";
         };

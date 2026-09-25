@@ -83,6 +83,22 @@ let
     else
       (p.values or [ ]);
 
+  # ── strMatching → JSON Schema `pattern` ────────────────────────────────────
+  # builtins.match anchors the whole string, a JSON Schema pattern does not, so
+  # wrap it. POSIX bracket classes ([[:alpha:]]) mean nothing to an ECMAScript
+  # engine; leave those patterns out rather than emit one that rejects valid
+  # values (the build still checks them).
+  strPattern =
+    type:
+    let
+      p = type.functor.payload.pattern or null;
+    in
+    optionalAttrs (
+      (type.functor.name or "") == "strMatching"
+      && builtins.isString p
+      && builtins.match ".*\\[:[a-z]+:].*" p == null
+    ) { pattern = "^(?:${p})$"; };
+
   # ── type → schema fragment (null = skip / non-serializable) ────────────────
   typeToSchema =
     type:
@@ -106,7 +122,7 @@ let
       ]
       || builtins.match ".*[Ss]tr.*" name != null
     then
-      { type = "string"; }
+      { type = "string"; } // strPattern type
     else if name == "bool" then
       { type = "boolean"; }
     else if

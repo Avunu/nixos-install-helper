@@ -151,6 +151,11 @@ The schema is derived from the **options your install modules declare**, filtere
   automatically and keep their Nix-side defaults — declare anything that should
   *not* be asked at install as one of these (or mark it `internal`).
 
+A `types.strMatching` option carries its regex into the schema as an anchored
+`pattern`, so a settings UI that validates against the schema rejects a bad value
+on save instead of at the next build. Stick to syntax POSIX ERE and ECMAScript
+share: a pattern with a bracket class such as `[[:alpha:]]` is left out.
+
 ## Flake styles & the value file
 
 When the schema is non-empty, `configure` writes flat `installer/<root>-settings.json`
