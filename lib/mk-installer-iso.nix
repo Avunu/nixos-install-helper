@@ -47,12 +47,12 @@
   extraClosurePaths ? [ ],
   extraSystemPackages ? [ ],
   # Extra NixOS modules merged into the ISO system itself — e.g. a hardware
-  # kernel the installer must boot with (cocalico's strix-halo linuxPackages_6_18).
+  # kernel the installer must boot with (a client server config's strix-halo linuxPackages_6_18).
   isoModules ? [ ],
   # mksquashfs compression for the ISO's nix store. See the isoImage assignment
   # below for why this is NOT nixpkgs' default. null disables compression.
   squashfsCompression ? "zstd -Xcompression-level 6",
-  # Lightening toggles (router drops zfs; cocalico's install system is xfs-only).
+  # Lightening toggles (router drops zfs; a client's install system is xfs-only).
   dropZfs ? false,
   dropDocs ? true,
   dropBluetooth ? true,

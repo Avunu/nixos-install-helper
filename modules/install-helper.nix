@@ -5,8 +5,8 @@
 #
 #   • remote  — boot the minimal install system, then a ONE-SHOT initial upgrade
 #     pulls the production config from `deployedConfiguration` and switches once;
-#     thereafter system.autoUpgrade keeps it current. (Generalizes cocalico's
-#     initial-upgrade service.)
+#     thereafter system.autoUpgrade keeps it current. (Generalizes the
+#     initial-upgrade service of a client's server config.)
 #   • local   — a first-boot reconcile applies the technician's seeded
 #     /etc/nixos config (this is how a GUIDED install applies the host identity
 #     that wasn't baked into the offline template closure).

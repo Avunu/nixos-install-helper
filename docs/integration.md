@@ -254,7 +254,7 @@ and pass `--impure` yourself.
 - **remote** — first boot pulls `deployedConfiguration` and switches once, then
   `system.autoUpgrade` keeps it current. This is the path for **staged
   module-separation** (install a minimal `installModules` offline, then switch to the
-  full production config with live secrets/disks) — e.g. cocalico, which sets
+  full production config with live secrets/disks) — e.g. a client's server config, which sets
   `lifecycle = false` and owns the first-boot switch itself. No `settings.json`.
 
 ## Deployment paths

@@ -18,7 +18,7 @@ args@{
   # The consuming flake's `self` (source shipped to the ISO, walked for the
   # offline closure, and used to auto-detect technician-facing option roots).
   self,
-  # Modules laid down by the installer (e.g. cocalico's [LCServerCore internalDrive]).
+  # Modules laid down by the installer (e.g. a client's [serverCore internalDrive]).
   installModules,
   # Lifecycle: "local" seeds /etc/nixos referencing `upstream`; "remote" boots
   # minimal then autoUpgrades to `deployedConfiguration`.
@@ -42,7 +42,7 @@ args@{
   diskDevice ? "",
   # Import the framework lifecycle module (first-boot reconcile / autoUpgrade).
   # Set false when the project already manages its own post-install upgrade
-  # (e.g. cocalico's LCServerCore initial-upgrade service).
+  # (e.g. a client server config's initial-upgrade service).
   lifecycle ? true,
   # Secret/key assets: [{ name; target; mode?; required?; source = {env|file|prompt}; }]
   assets ? [ ],
@@ -419,7 +419,7 @@ let
       ];
 
   # Built lazily: null unless local style with an upstream, so it never evaluates
-  # for remote projects (cocalico) or when there is nothing to reference.
+  # for remote projects (a client's server config) or when there is nothing to reference.
   localFlakeNix =
     if flakeStyle == "local" && upstream != null then
       pkgs.writeText "flake.nix" ''
@@ -541,7 +541,7 @@ let
       null;
 
   # The install disk device: explicit arg wins; otherwise read it from the
-  # install system's disko config (so a module-fixed device — cocalico's PCI
+  # install system's disko config (so a module-fixed device — a client's PCI
   # path — needs no duplication). Empty is fine for the guided ISO.
   resolvedDiskDevice =
     if diskDevice != "" then
