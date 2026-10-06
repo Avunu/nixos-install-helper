@@ -6,7 +6,7 @@
 # The "configurable surface" of a consuming project is whatever options its
 # install modules DECLARE — so the schema is read straight off the evaluated
 # option tree, never hand-mirrored. A project that declares no options (e.g.
-# server-little_cocalico, every value settled in-repo) yields an empty schema,
+# a client's server config, every value settled in-repo) yields an empty schema,
 # which the gum layer treats as "no prompts, just install".
 #
 # Root selection:
