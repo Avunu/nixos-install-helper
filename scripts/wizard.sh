@@ -6,10 +6,12 @@ set -euo pipefail
 #  deployment path — network install, unattended ISO, or guided ISO.
 # ════════════════════════════════════════════════════════════════════════════
 
-FLAKE="${IH_FLAKE_REF:-.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-flash.sh
 source "${SCRIPT_DIR}/lib-flash.sh"
+# shellcheck source=lib-flake.sh
+source "${SCRIPT_DIR}/lib-flake.sh"
+FLAKE="$(resolve_flake)"
 
 gum style --border double --padding "1 2" --border-foreground 212 \
     "nixos-install-helper" "Guided deployment wizard"

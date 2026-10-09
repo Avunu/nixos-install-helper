@@ -4,10 +4,12 @@ set -euo pipefail
 #  install.sh — pick a deployment path and build/launch it. Workstation-side.
 # ════════════════════════════════════════════════════════════════════════════
 
-FLAKE="${IH_FLAKE_REF:-.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-flash.sh
 source "${SCRIPT_DIR}/lib-flash.sh"
+# shellcheck source=lib-flake.sh
+source "${SCRIPT_DIR}/lib-flake.sh"
+FLAKE="$(resolve_flake)"
 
 # The last step of every ISO build is one mksquashfs pass over the whole offline
 # closure, and mksquashfs suppresses its progress bar whenever stdout is not a

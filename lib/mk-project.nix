@@ -756,6 +756,9 @@ let
           export IH_DISK_NAME=${diskName}
           export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
           export IH_GUIDED=${if guided then "1" else "0"}
+          # The flake that shipped this app. Scripts build it when the cwd is not a
+          # project (`nix run github:Owner/repo` from an empty directory).
+          export IH_FLAKE_DEFAULT=${self}
           ${lib.optionalString (localFlakeNix != null) ''
             # Local style: what a network install seeds into /etc/nixos, the same
             # synthesized flake + placeholder module + per-root settings the ISOs seed.
