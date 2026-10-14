@@ -131,4 +131,4 @@ if [ "${#written[@]}" -eq 0 ]; then
 else
     gum style --foreground 42 "Wrote: ${written[*]}"
 fi
-echo "Next:  nix run .#install"
+[ -n "${IH_CONFIGURE_NO_NEXT:-}" ] || echo "Next:  nix run .#install"

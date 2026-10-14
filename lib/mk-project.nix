@@ -21,7 +21,9 @@ args@{
   # Modules laid down by the installer (e.g. a client's [serverCore internalDrive]).
   installModules,
   # Lifecycle: "local" seeds /etc/nixos referencing `upstream`; "remote" boots
-  # minimal then autoUpgrades to `deployedConfiguration`.
+  # minimal then autoUpgrades to `deployedConfiguration`; "repo" is a host repo
+  # installing ITSELF and then tracking `repo` (see hostRepo below for how one
+  # is created).
   flakeStyle ? "local",
   upstream ? null, # github:Owner/repo  (local style)
   # Where the synthesized local flake's nixpkgs comes from. false (the default):
@@ -33,6 +35,23 @@ args@{
   # the upstream input is what moves it.
   nixpkgsFromUpstream ? false,
   deployedConfiguration ? null, # github:Owner/repo#attr (remote style)
+  # github:Owner/host-name (repo style): the repository holding this one
+  # machine's configuration, which the installed machine keeps switching to.
+  repo ? null,
+  # Lets a GENERIC project (local style) create per-machine host repos: the
+  # `new-host` app collects settings, mints the machine's SSH host key, encrypts
+  # a read-only GitHub token to it, and pushes a private repo built from the
+  # `hostRepoTemplate` package — a flake that calls mkProject with
+  # flakeStyle = "repo" on itself. null: no template, no app.
+  #   {
+  #     owner;              # GitHub owner of the new repos
+  #     prefix ? "host-";   # repo name = prefix + chosen name
+  #     adminKeys;          # SSH public keys that can decrypt every host secret
+  #     topic ? "nixos-host";
+  #   }
+  # The template declares agenix secrets, so the project's install modules
+  # must import agenix's NixOS module.
+  hostRepo ? null,
   # Schema root override; null → auto-detect namespaces declared by the project.
   optionRoots ? null,
   # disko --disk mapping. diskDevice "" → auto-read from the install system's
@@ -85,7 +104,9 @@ args@{
   schemaExclude ? [ ],
   # When false, no guided (generic template) ISO is built and the wizard/install
   # menus hide the guided path. The per-host unattended ISO + network deploy remain.
-  guided ? true,
+  # Off by default for repo style: a host repo describes one machine, so a generic
+  # image of it has no one to serve.
+  guided ? flakeStyle != "repo",
   specialArgs ? { },
   # ISO lightening passthroughs.
   dropZfs ? false,
@@ -137,7 +158,8 @@ let
           installHelper = {
             inherit flakeStyle upstream deployedConfiguration;
             enable = lifecycle;
-          };
+          }
+          // lib.optionalAttrs (repo != null) { repo.url = repo; };
         }
       ];
     };
@@ -540,6 +562,126 @@ let
     else
       null;
 
+  # ── Host-repo template (hostRepo) ──────────────────────────────────────────
+  # What `new-host` copies into a fresh repository for one machine: the static
+  # files under templates/host-repo plus a flake.nix that imports the same
+  # upstream module(s) the synthesized local flake does, and calls mkProject on
+  # ITSELF with flakeStyle = "repo" — so the host repo builds its own unattended
+  # ISO / network install, and the installed machine keeps switching to it.
+  #
+  # The one per-machine value in it, the repo's own flake ref, is the
+  # placeholder @IH_REPO@; new-host substitutes it (and writes the settings and
+  # secrets). nixos-install-helper follows the upstream's copy, so the host repo
+  # runs the framework revision its upstream was tested with.
+  hostRepoInstallHelperInput =
+    (if hostRepo == null then { } else hostRepo).installHelperInput or "nixos-install-helper";
+
+  hostRepoFlakeNix =
+    if hostRepo != null && upstream != null then
+      pkgs.writeText "flake.nix" ''
+        # This machine's configuration. The machine tracks this repository: push
+        # to the default branch and its next daily upgrade switches to it.
+        #   nix run        install it (network install or an unattended ISO)
+        #   nix develop    edit secrets: ragenix -e secrets/<name>.age
+        {
+          inputs = {
+            ${lib.concatStringsSep "\n    " localFlakeInputs}
+            ${hostRepoInstallHelperInput}.follows = "${upstreamInputName}/${hostRepoInstallHelperInput}";
+          };
+          outputs =
+            {
+              self,
+              nixpkgs,
+              ${upstreamInputName},
+              ${hostRepoInstallHelperInput},
+              ...
+            }@inputs:
+            let
+              system = "${system}";
+              pkgs = nixpkgs.legacyPackages.''${system};
+              ih = ${hostRepoInstallHelperInput}.lib.mkProject {
+                inherit nixpkgs system self;
+                # ./local.nix reaches every input above as `inputs`.
+                specialArgs = { inherit inputs; };
+                flakeStyle = "repo";
+                repo = "@IH_REPO@";
+                optionRoots = [ ${lib.concatMapStringsSep " " (r: ''"${r}"'') resolvedRoots} ];
+                settingsFiles = {
+        ${lib.concatMapStringsSep "\n" (r: "          ${r} = ./${r}-settings.json;") resolvedRoots}
+                };
+                installModules = [
+        ${lib.concatMapStringsSep "\n" (
+          m: "          ${upstreamInputName}.nixosModules.${m}"
+        ) localModuleNames}
+                  # The read-only token this machine fetches its own (private)
+                  # repository with. Decrypted at activation with the SSH host key;
+                  # pulled into nix.conf by path, so it never enters the store.
+                  # Conditional so the repo still evaluates before it exists.
+                  (
+                    { config, lib, ... }:
+                    let
+                      present = builtins.pathExists ./secrets/github-token.age;
+                    in
+                    {
+                      age.secrets = lib.mkIf present {
+                        github-token.file = ./secrets/github-token.age;
+                      };
+                      installHelper.repo.accessTokensFile = lib.mkIf present config.age.secrets.github-token.path;
+                    }
+                  )
+                ]
+                # Machine-local configuration (extra packages, per-host tweaks).
+                ++ nixpkgs.lib.optional (builtins.pathExists ./local.nix) ./local.nix;
+                assets = [
+                  {
+                    # The machine's identity, generated by new-host: what its
+                    # secrets are encrypted to. Kept here encrypted to the admins
+                    # only; the installer decrypts it with your SSH key.
+                    name = "ssh-host-key";
+                    target = "/etc/ssh/ssh_host_ed25519_key";
+                    mode = "0600";
+                    required = true;
+                    source = {
+                      env = "ih_ssh_host_key";
+                      ageFile = "secrets/ssh-host-key.age";
+                      prompt = "paste";
+                    };
+                  }
+                ];
+              };
+              host = ih.nixosConfigurations.install;
+            in
+            {
+              # `default` is what the machine tracks; the hostname alias makes a
+              # bare `nixos-rebuild --flake .` from a checkout on it match too.
+              nixosConfigurations = ih.nixosConfigurations // {
+                default = host;
+                "''${host.config.networking.hostName}" = host;
+              };
+              packages.''${system} = ih.packages.''${system};
+              apps.''${system} = ih.apps.''${system};
+              devShells.''${system}.default = pkgs.mkShell {
+                packages = [
+                  pkgs.age
+                  pkgs.ragenix
+                ];
+              };
+            };
+        }
+      ''
+    else
+      null;
+
+  hostRepoTemplate =
+    if hostRepoFlakeNix != null then
+      pkgs.runCommand "host-repo-template" { } ''
+        cp -r ${frameworkSelf}/templates/host-repo "$out"
+        chmod -R u+w "$out"
+        cp ${hostRepoFlakeNix} "$out/flake.nix"
+      ''
+    else
+      null;
+
   # The install disk device: explicit arg wins; otherwise read it from the
   # install system's disko config (so a module-fixed device — a client's PCI
   # path — needs no duplication). Empty is fine for the guided ISO.
@@ -756,6 +898,9 @@ let
           export IH_DISK_NAME=${diskName}
           export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
           export IH_GUIDED=${if guided then "1" else "0"}
+          # Settings are tracked files of the project (a host repo): nothing for
+          # the wizard to collect, nothing to inject impurely.
+          export IH_SETTINGS_TRACKED=${if flakeStyle == "repo" then "1" else "0"}
           # The flake that shipped this app. Scripts build it when the cwd is not a
           # project (`nix run github:Owner/repo` from an empty directory).
           export IH_FLAKE_DEFAULT=${self}
@@ -786,6 +931,7 @@ in
     localFlakeNix
     localModuleNix
     upstreamInputName
+    hostRepoFlakeNix
     ;
 
   nixosConfigurations = {
@@ -798,6 +944,7 @@ in
     settingsSchema = schemaJson;
     installerIso = guardRequiredAssets unattendedIsoSystem.config.system.build.isoImage;
   }
+  // lib.optionalAttrs (hostRepoTemplate != null) { inherit hostRepoTemplate; }
   # Per-root FLAT schema packages: `settingsSchema-<root>` (e.g. what
   # nixos-router's Cockpit build diffs its committed router-settings.schema.json
   # against).
@@ -870,6 +1017,7 @@ in
   apps.${system} = {
     # The single entrypoint: `nix run .#` / `nix run github:Owner/repo`.
     default = mkApp "wizard" [
+      pkgs.age
       pkgs.gum
       pkgs.jq
       pkgs.nix
@@ -884,15 +1032,49 @@ in
       pkgs.iproute2
     ];
     install = mkApp "install" [
+      pkgs.age
       pkgs.gum
       pkgs.jq
       pkgs.nix
       pkgs.util-linux # lsblk for the USB-flash picker
     ];
     deploy = mkApp "deploy" [
+      pkgs.age
       pkgs.gum
       pkgs.jq
       nixosAnywhere.packages.${system}.default
     ];
+  }
+  // lib.optionalAttrs (hostRepoTemplate != null) {
+    new-host =
+      let
+        app = mkApp "new-host" [
+          pkgs.age
+          pkgs.gh
+          pkgs.git
+          pkgs.gnused
+          pkgs.gum
+          pkgs.jq
+          pkgs.nix
+          pkgs.openssh
+          pkgs.util-linux
+          pkgs.iproute2
+        ];
+      in
+      app
+      // {
+        program = lib.getExe (
+          pkgs.writeShellScriptBin "new-host" ''
+            export IH_HOST_TEMPLATE=${hostRepoTemplate}
+            export IH_HOST_OWNER=${lib.escapeShellArg hostRepo.owner}
+            export IH_HOST_PREFIX=${lib.escapeShellArg (hostRepo.prefix or "host-")}
+            export IH_HOST_TOPIC=${lib.escapeShellArg (hostRepo.topic or "nixos-host")}
+            export IH_ADMIN_KEYS=${pkgs.writeText "admin-keys.json" (builtins.toJSON hostRepo.adminKeys)}
+            export IH_ROOTS=${pkgs.writeText "roots.json" (builtins.toJSON resolvedRoots)}
+            export IH_PRIMARY_ROOT=${lib.escapeShellArg (if primaryRoot == null then "" else primaryRoot)}
+            exec ${app.program} "$@"
+          ''
+        );
+      };
   };
 }

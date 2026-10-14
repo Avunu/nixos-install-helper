@@ -11,14 +11,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-flash.sh"
 # shellcheck source=lib-flake.sh
 source "${SCRIPT_DIR}/lib-flake.sh"
+# shellcheck source=lib-assets.sh
+source "${SCRIPT_DIR}/lib-assets.sh"
 FLAKE="$(resolve_flake)"
+load_age_assets
 
 gum style --border double --padding "1 2" --border-foreground 212 \
     "nixos-install-helper" "Guided deployment wizard"
 
 # ── 1. Settings (only when this project exposes install-time options) ────────
-# configure.sh writes FLAT per-root files: installer/<root>-settings.json.
-if [ "${IH_HAS_SETTINGS:-0}" = "1" ]; then
+# configure.sh writes FLAT per-root files: installer/<root>-settings.json. A
+# project whose settings are tracked files (a host repo) is already configured.
+if [ "${IH_HAS_SETTINGS:-0}" = "1" ] && [ "${IH_SETTINGS_TRACKED:-0}" != "1" ]; then
     if ! ls installer/*-settings.json >/dev/null 2>&1; then
         gum style "No installer settings yet — let's create them."
         bash "${SCRIPT_DIR}/configure.sh" "installer/settings.json"
