@@ -88,7 +88,12 @@ nixpkgs.lib.nixosSystem {
   ++ isoModules
   ++ [
     (
-      { pkgs, lib, ... }:
+      {
+        config,
+        pkgs,
+        lib,
+        ...
+      }:
       let
         # Everything the boot install scripts (unattended-install.sh /
         # guided-install.sh / lib-flash.sh) invoke. Shared between the system
@@ -114,6 +119,13 @@ nixpkgs.lib.nixosSystem {
           # exec itself fails ("bash: exec: bash: not found"), hiding whatever the
           # real failure was behind a confusing "bash not found" error.
           pkgs.bashInteractive
+          # lib-preflight.sh runs `nix flake metadata` and `nix-build` itself,
+          # before disko-install — whose wrapper puts nix on its own PATH, but
+          # only for its own process. A shell on another VT gets nix from the
+          # system profile, so the same script worked there and failed only
+          # here, as "nix-build: command not found" reported as an incomplete
+          # closure.
+          config.nix.package
         ]
         ++ extraSystemPackages;
       in
