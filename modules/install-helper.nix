@@ -10,6 +10,11 @@
 #   • local   — a first-boot reconcile applies the technician's seeded
 #     /etc/nixos config (this is how a GUIDED install applies the host identity
 #     that wasn't baked into the offline template closure).
+#   • repo    — the machine's own configuration lives in a (usually private)
+#     repository, `repo.url`, and the machine keeps switching to whatever that
+#     repository publishes. Nothing is seeded into /etc/nixos: the repository is
+#     the one place the machine changes. A private GitHub repository is read
+#     with the token in `repo.accessTokensFile`.
 #
 # Secret assets (e.g. the agenix key) are placed by the installer via
 # disko-install/nixos-anywhere --extra-files; wiring agenix to read them is the
@@ -35,11 +40,13 @@ in
       type = lib.types.enum [
         "local"
         "remote"
+        "repo"
       ];
       default = "local";
       description = ''
         "local": ongoing updates via a seeded /etc/nixos flake (downstream).
         "remote": boot minimal, then track an upstream production flake.
+        "repo": track this machine's own configuration repository (`repo`).
       '';
     };
     upstream = lib.mkOption {
@@ -51,6 +58,54 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Production flake ref with attr (github:Owner/repo#attr) for remote style.";
+    };
+    repo = {
+      url = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "github:Owner/host-name";
+        description = ''
+          The flake (without `#attr`) holding THIS machine's configuration, for
+          repo style. Use the `github:` scheme for a private GitHub repository:
+          nix's `access-tokens` authenticate the github fetcher, not git+https.
+        '';
+      };
+      attr = lib.mkOption {
+        type = lib.types.str;
+        default = "default";
+        description = "nixosConfigurations attribute of `url` this machine runs.";
+      };
+      flakeRef = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        readOnly = true;
+        default = if cfg.repo.url == null then null else "${cfg.repo.url}#${cfg.repo.attr}";
+        defaultText = lib.literalExpression ''"''${url}#''${attr}"'';
+        description = ''
+          `url#attr`, for a module that runs its own upgrade timer (and so sets
+          `autoUpgrade = false`) to point that timer at.
+        '';
+      };
+      accessTokensFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = lib.literalExpression "config.age.secrets.github-token.path";
+        description = ''
+          A root-only file whose contents are nix.conf lines, typically
+          `access-tokens = github.com=<read-only token>`, pulled into nix.conf
+          with `!include` at runtime. A path string, NOT a Nix path: the token
+          must never be copied into the world-readable store. The leading `!`
+          makes a missing file harmless (early boot, a VM without the secret).
+        '';
+      };
+      autoUpgrade = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Keep the machine current with `system.autoUpgrade` pointed at
+          `flakeRef`. Turn off when the project already runs an upgrade timer of
+          its own, and point that at `flakeRef` instead.
+        '';
+      };
     };
     reconcile = lib.mkOption {
       type = lib.types.bool;
@@ -107,6 +162,37 @@ in
               exit 1
             fi
           '';
+        };
+      })
+
+      # ── repo: authenticate, then keep switching to the published config ────
+      (lib.mkIf (cfg.flakeStyle == "repo") {
+        assertions = [
+          {
+            assertion = cfg.repo.url != null;
+            message = "installHelper.flakeStyle = \"repo\" needs installHelper.repo.url.";
+          }
+          {
+            assertion = cfg.repo.url == null || !lib.hasPrefix "git+https://github.com" cfg.repo.url;
+            message = ''
+              installHelper.repo.url is ${toString cfg.repo.url}; nix's access-tokens
+              only authenticate the github: fetcher. Use github:Owner/repo instead.
+            '';
+          }
+        ];
+
+        nix.extraOptions = lib.mkIf (cfg.repo.accessTokensFile != null) ''
+          !include ${cfg.repo.accessTokensFile}
+        '';
+
+        system.autoUpgrade = lib.mkIf (cfg.repo.autoUpgrade && cfg.repo.flakeRef != null) {
+          enable = lib.mkDefault true;
+          flake = cfg.repo.flakeRef;
+          # Without --refresh nix trusts a fetched tarball for tarball-ttl (an
+          # hour), so a push could sit unapplied past the next run.
+          flags = [ "--refresh" ];
+          dates = lib.mkDefault "03:00";
+          randomizedDelaySec = lib.mkDefault "30min";
         };
       })
 

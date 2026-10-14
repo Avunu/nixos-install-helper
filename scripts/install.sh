@@ -9,7 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib-flash.sh"
 # shellcheck source=lib-flake.sh
 source "${SCRIPT_DIR}/lib-flake.sh"
+# shellcheck source=lib-assets.sh
+source "${SCRIPT_DIR}/lib-assets.sh"
 FLAKE="$(resolve_flake)"
+load_age_assets
 
 # The last step of every ISO build is one mksquashfs pass over the whole offline
 # closure, and mksquashfs suppresses its progress bar whenever stdout is not a

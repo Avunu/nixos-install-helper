@@ -10,7 +10,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-flake.sh
 source "${SCRIPT_DIR}/lib-flake.sh"
+# shellcheck source=lib-assets.sh
+source "${SCRIPT_DIR}/lib-assets.sh"
 FLAKE="$(resolve_flake)"
+load_age_assets
 TARGET="${1:-}"
 [ -z "$TARGET" ] && TARGET=$(gum input --header "Target SSH host" --placeholder "root@192.0.2.10")
 [ -z "$TARGET" ] && { echo "No target host given."; exit 1; }

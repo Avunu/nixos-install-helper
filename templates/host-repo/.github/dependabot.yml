@@ -1,0 +1,15 @@
+version: 2
+
+# The machine runs exactly what this repository's flake.lock pins — it no longer
+# updates a lock of its own — so input bumps arrive here, as pull requests, and
+# eval.yml merges each one whose configuration still evaluates.
+updates:
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      nix:
+        patterns: ["*"]

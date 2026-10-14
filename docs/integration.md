@@ -257,6 +257,69 @@ and pass `--impure` yourself.
   full production config with live secrets/disks) — e.g. a client's server config, which sets
   `lifecycle = false` and owns the first-boot switch itself. No `settings.json`.
 
+- **repo** — the project *is* one machine's configuration repository and
+  installs itself; the installed machine then keeps switching to `repo`
+  (`github:Owner/host-name`) as published. Nothing is seeded into `/etc/nixos`:
+  the repository is the one place the machine changes. Set
+  `installHelper.repo.accessTokensFile` to a root-only file holding
+  `access-tokens = github.com=<token>` for a private repo; it is `!include`d into
+  nix.conf by path, so the token never enters the store. The lifecycle module runs
+  `system.autoUpgrade` against `installHelper.repo.flakeRef` (with `--refresh`)
+  unless `installHelper.repo.autoUpgrade = false` — set that when your project
+  runs its own upgrade timer and point the timer at `flakeRef` instead
+  (micro-desktop: `microDesktop.upgradeFlake`). No guided ISO by default. Settings
+  are tracked files of the repo (`settingsFiles`), so the wizard does not collect
+  them.
+
+## Host repos: `hostRepo` and `new-host`
+
+A generic (local-style) project can mint repo-style host repositories:
+
+```nix
+hostRepo = {
+  owner = "Owner";            # GitHub owner of the new repos
+  prefix = "host-";           # default
+  topic = "nixos-host";       # default; tagged on each repo, for fleet scripts
+  adminKeys = [ "ssh-ed25519 AAAA… admin" ];
+};
+```
+
+This adds the `hostRepoTemplate` package and a `new-host` app:
+
+```sh
+nix run github:Owner/project#new-host
+```
+
+It runs the settings questionnaire, then writes a new directory containing
+`hostRepoTemplate` (a flake calling `mkProject` on itself with
+`flakeStyle = "repo"`, following the upstream's `nixos-install-helper`), the
+answers as `<root>-settings.json`, and:
+
+| File | Encrypted to |
+|------|--------------|
+| `secrets/ssh-host-key.age` — the machine's SSH host key, generated here | admins |
+| `secrets/github-token.age` — `access-tokens = github.com=<read-only token>` | admins + the host key |
+
+The host key is minted before the machine exists so it can be a recipient from
+the start: the installer decrypts `ssh-host-key.age` (an `ageFile` asset, below)
+and places it at `/etc/ssh/ssh_host_ed25519_key`, and agenix decrypts the token
+with it at first activation. `new-host` then locks the flake, commits, and offers
+`gh repo create --private --push`. The template also ships a dependabot config for
+flake inputs and an eval-only workflow that merges dependabot's bumps once the
+configuration still evaluates — the machine no longer updates a lock of its own.
+
+The template declares `age.secrets`, so your install modules must import
+agenix's NixOS module, and should put the SSH host keys in `age.identityPaths`
+(agenix's default when openssh is enabled).
+
+### `ageFile` asset sources
+
+An asset may name `source.ageFile` (relative to the project root) alongside
+`source.env`. When the variable is empty, the wizard, `install` and `deploy`
+decrypt the file with the operator's SSH key and export it, so the rest of the
+pipeline sees an ordinary env-sourced asset. Identities: `IH_AGE_IDENTITY`
+(colon-separated) or every `~/.ssh/id_*` with an ed25519/RSA `.pub` beside it.
+
 ## Deployment paths
 
 | Path            | Built from              | Offline | Per-host config | Secrets |

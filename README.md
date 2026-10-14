@@ -51,6 +51,11 @@ nix run .#install          # build/flash an ISO, or install now
 nix run .#deploy -- root@<ip>   # nixos-anywhere straight to a reachable target
 ```
 
+A project can also mint one private **host repo** per machine (`hostRepo`,
+`nix run .#new-host`): the machine installs from that repo and keeps switching
+to whatever it publishes, authenticated by a read-only GitHub token kept as an
+agenix secret.
+
 For the full option reference — settings files, secret assets, gum hints,
 schema exclusions, guided vs. unattended tradeoffs — see
 [`docs/integration.md`](docs/integration.md).
