@@ -626,7 +626,7 @@ let
                       age.secrets = lib.mkIf present {
                         github-token.file = ./secrets/github-token.age;
                       };
-                      installHelper.repo.accessTokensFile = lib.mkIf present config.age.secrets.github-token.path;
+                      installHelper.repo.tokenFile = lib.mkIf present config.age.secrets.github-token.path;
                     }
                   )
                 ]

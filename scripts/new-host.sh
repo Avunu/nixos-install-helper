@@ -9,8 +9,8 @@ set -euo pipefail
 #    <root>-settings.json        the installer questionnaire's answers
 #    secrets.nix                 admins + this machine's SSH host key
 #    secrets/ssh-host-key.age    the machine's identity, encrypted to the admins
-#    secrets/github-token.age    `access-tokens = github.com=<token>`, encrypted
-#                                to the admins and the machine
+#    secrets/github-token.age    the bare read-only token, encrypted to the
+#                                admins and the machine
 #
 #  Env (set by the mkProject app wrapper): IH_HOST_TEMPLATE, IH_HOST_OWNER,
 #  IH_HOST_PREFIX, IH_HOST_TOPIC, IH_ADMIN_KEYS (JSON list), IH_ROOTS,
@@ -97,7 +97,7 @@ if [ -z "$TOKEN" ]; then
     TOKEN=$(gum input --password --header "Read-only GitHub token")
 fi
 [ -z "$TOKEN" ] && { echo "No token given." >&2; exit 1; }
-printf 'access-tokens = github.com=%s\n' "$TOKEN" \
+printf '%s\n' "$TOKEN" \
     | age "${recipients[@]}" -r "$HOST_PUB" -o "$DIR/secrets/github-token.age"
 unset TOKEN
 

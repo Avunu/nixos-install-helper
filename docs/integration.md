@@ -261,9 +261,12 @@ and pass `--impure` yourself.
   installs itself; the installed machine then keeps switching to `repo`
   (`github:Owner/host-name`) as published. Nothing is seeded into `/etc/nixos`:
   the repository is the one place the machine changes. Set
-  `installHelper.repo.accessTokensFile` to a root-only file holding
-  `access-tokens = github.com=<token>` for a private repo; it is `!include`d into
-  nix.conf by path, so the token never enters the store. The lifecycle module runs
+  `installHelper.repo.tokenFile` to a root-only file holding the read-only
+  token for a private repo — the bare token, or a full
+  `access-tokens = github.com=<token>` line. At activation it becomes a
+  root-only `access-tokens` line under /run that nix.conf `!include`s, so the
+  token never enters the store, and anything that is neither is refused with a
+  warning instead of breaking every nix command. The lifecycle module runs
   `system.autoUpgrade` against `installHelper.repo.flakeRef` (with `--refresh`)
   unless `installHelper.repo.autoUpgrade = false` — set that when your project
   runs its own upgrade timer and point the timer at `flakeRef` instead
@@ -298,7 +301,7 @@ answers as `<root>-settings.json`, and:
 | File | Encrypted to |
 |------|--------------|
 | `secrets/ssh-host-key.age` — the machine's SSH host key, generated here | admins |
-| `secrets/github-token.age` — `access-tokens = github.com=<read-only token>` | admins + the host key |
+| `secrets/github-token.age` — the bare read-only token | admins + the host key |
 
 The host key is minted before the machine exists so it can be a recipient from
 the start: the installer decrypts `ssh-host-key.age` (an `ageFile` asset, below)
