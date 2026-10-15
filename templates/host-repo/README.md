@@ -9,7 +9,7 @@ it. Nothing on the machine itself needs editing; `/etc/nixos` is not used.
 | `*-settings.json` | the values the installer asked about (host name, user, disk, …) |
 | `local.nix` | anything else: extra packages, per-machine NixOS config |
 | `secrets.nix` | who can decrypt each file in `secrets/` |
-| `secrets/github-token.age` | `access-tokens = github.com=<read-only token>`, so the machine can fetch this private repo |
+| `secrets/github-token.age` | the read-only GitHub token (just the `github_pat_…` value), so the machine can fetch this private repo |
 | `secrets/ssh-host-key.age` | the machine's SSH host key, encrypted to the admins only; the installer decrypts it and gives it to the machine, which then uses it to decrypt its own secrets |
 
 ## Install or reinstall
@@ -40,7 +40,7 @@ The token is a fine-grained PAT with **Contents: read-only** on the host repos
 
 ```sh
 nix develop
-ragenix -e secrets/github-token.age   # the one line: access-tokens = github.com=<new token>
+ragenix -e secrets/github-token.age   # just the new token, nothing else
 ```
 
 Push, and wait for the machine to pick it up (it fetches with the old token and

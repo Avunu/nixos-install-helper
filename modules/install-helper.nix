@@ -14,7 +14,7 @@
 #     repository, `repo.url`, and the machine keeps switching to whatever that
 #     repository publishes. Nothing is seeded into /etc/nixos: the repository is
 #     the one place the machine changes. A private GitHub repository is read
-#     with the token in `repo.accessTokensFile`.
+#     with the token in `repo.tokenFile`.
 #
 # Secret assets (e.g. the agenix key) are placed by the installer via
 # disko-install/nixos-anywhere --extra-files; wiring agenix to read them is the
@@ -28,8 +28,57 @@
 let
   cfg = config.installHelper;
   stampDir = "/var/lib/install-helper";
+
+  # Where the nix.conf line built from `repo.tokenFile` lands. Root-only, under
+  # /run so it never outlives the decrypted secret it was made from.
+  accessTokensConf = "/run/install-helper/nix-access-tokens.conf";
+
+  # Build the nix.conf `access-tokens` line from `repo.tokenFile`, or remove a
+  # stale one. Validated, because whatever lands in accessTokensConf is parsed
+  # by EVERY nix invocation on the machine: a bare token !include'd as-is is a
+  # syntax error that takes down nix-env, and with it nixos-rebuild and the
+  # bootloader install. Anything that is not a token, or an `access-tokens`
+  # line, is refused with a warning and nix carries on without credentials.
+  renderAccessTokens = pkgs.writeShellScript "install-helper-access-tokens" ''
+    set -u
+    umask 077
+    src=${lib.escapeShellArg (toString cfg.repo.tokenFile)}
+    dst=${accessTokensConf}
+    mkdir -p "$(dirname "$dst")"
+    if [ ! -r "$src" ]; then
+      # Not decrypted (yet): agenix running as a later systemd unit, or a
+      # machine without the secret. The service below retries after agenix.
+      rm -f "$dst"
+      exit 0
+    fi
+    line=$(${pkgs.gnugrep}/bin/grep -v '^[[:space:]]*\(#.*\)\?$' "$src" | ${pkgs.coreutils}/bin/head -n1 | ${pkgs.coreutils}/bin/tr -d '\r')
+    case "$line" in
+      access-tokens[[:space:]]*=*)
+        out="$line" ;;
+      *)
+        token=$(printf '%s' "$line" | ${pkgs.coreutils}/bin/tr -d '[:space:]')
+        if printf '%s' "$token" | ${pkgs.gnugrep}/bin/grep -qE '^[A-Za-z0-9_]+$'; then
+          out="access-tokens = github.com=$token"
+        else
+          echo "install-helper: $src is neither a GitHub token nor an access-tokens line; ignoring it" >&2
+          rm -f "$dst"
+          exit 0
+        fi ;;
+    esac
+    tmp=$(${pkgs.coreutils}/bin/mktemp "$dst.XXXXXX")
+    printf '%s\n' "$out" > "$tmp"
+    ${pkgs.coreutils}/bin/chmod 0400 "$tmp"
+    ${pkgs.coreutils}/bin/mv -f "$tmp" "$dst"
+  '';
 in
 {
+  imports = [
+    (lib.mkRenamedOptionModule
+      [ "installHelper" "repo" "accessTokensFile" ]
+      [ "installHelper" "repo" "tokenFile" ]
+    )
+  ];
+
   options.installHelper = {
     enable = lib.mkOption {
       type = lib.types.bool;
@@ -85,16 +134,18 @@ in
           `autoUpgrade = false`) to point that timer at.
         '';
       };
-      accessTokensFile = lib.mkOption {
+      tokenFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         example = lib.literalExpression "config.age.secrets.github-token.path";
         description = ''
-          A root-only file whose contents are nix.conf lines, typically
-          `access-tokens = github.com=<read-only token>`, pulled into nix.conf
-          with `!include` at runtime. A path string, NOT a Nix path: the token
-          must never be copied into the world-readable store. The leading `!`
-          makes a missing file harmless (early boot, a VM without the secret).
+          A root-only file holding the read-only GitHub token: the bare token
+          (`github_pat_…`), or a full nix.conf line
+          `access-tokens = github.com=<token>`. At activation it becomes an
+          `access-tokens` line in a root-only file under /run, which nix.conf
+          `!include`s; anything that is neither is refused with a warning
+          rather than breaking every nix command. A path string, NOT a Nix
+          path: the token must never be copied into the world-readable store.
         '';
       };
       autoUpgrade = lib.mkOption {
@@ -181,9 +232,31 @@ in
           }
         ];
 
-        nix.extraOptions = lib.mkIf (cfg.repo.accessTokensFile != null) ''
-          !include ${cfg.repo.accessTokensFile}
+        # `!` (don't error if absent): early boot, a VM without the secret.
+        nix.extraOptions = lib.mkIf (cfg.repo.tokenFile != null) ''
+          !include ${accessTokensConf}
         '';
+
+        # At activation, which is where `nixos-install` and every switch need it
+        # (the bootloader install runs nix-env right after) — after agenix's own
+        # activation-time decryption when it has one…
+        system.activationScripts.installHelperAccessTokens = lib.mkIf (cfg.repo.tokenFile != null) {
+          text = "${renderAccessTokens}";
+          deps = lib.optional (config.system.activationScripts ? agenixInstall) "agenixInstall";
+        };
+
+        # …and again once agenix's systemd unit has run, for systems where it
+        # decrypts as a service (sysusers/userborn) rather than at activation.
+        systemd.services.install-helper-access-tokens = lib.mkIf (cfg.repo.tokenFile != null) {
+          description = "Install-helper: nix access-tokens from the GitHub token secret";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "agenix-install-secrets.service" ];
+          before = [ "nix-daemon.service" ];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = renderAccessTokens;
+          };
+        };
 
         system.autoUpgrade = lib.mkIf (cfg.repo.autoUpgrade && cfg.repo.flakeRef != null) {
           enable = lib.mkDefault true;
