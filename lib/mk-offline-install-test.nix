@@ -295,8 +295,18 @@ pkgs.testers.runNixOSTest {
         # stdin from /dev/null: the unattended script offers a 10-second
         # "press Enter to install now" countdown, and letting it `read` from the
         # driver's shell socket would eat the backdoor protocol.
+        #
+        # PATH is the installer UNIT's, not the driver shell's: on a real boot
+        # the script runs as nixos-install.service, which gets only its `path`
+        # and not /run/current-system/sw/bin. Running it with the shell's PATH
+        # is how a missing nix-build went unnoticed here while every real
+        # unattended boot failed on it.
+        unit_env = machine.succeed("systemctl show -p Environment --value nixos-install")
+        unit_path = next(
+            kv.split("=", 1)[1] for kv in unit_env.split() if kv.startswith("PATH=")
+        )
         machine.succeed(
-            "PATH=/tmp/ih-stub:$PATH ${envPrefix} bash ${installScript} </dev/null",
+            "PATH=/tmp/ih-stub:" + unit_path + " ${envPrefix} bash ${installScript} </dev/null",
             timeout=${toString installTimeout},
         )
 
