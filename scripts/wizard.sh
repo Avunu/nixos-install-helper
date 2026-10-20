@@ -2,8 +2,9 @@
 set -euo pipefail
 # ════════════════════════════════════════════════════════════════════════════
 #  wizard.sh — the single entrypoint (`nix run .#` / `nix run github:Owner/repo`).
-#  Walks the technician through: (optionally) collecting settings, then choosing a
-#  deployment path — network install, unattended ISO, or guided ISO.
+#  Walks the technician through: (optionally) collecting settings, (in a
+#  directory that is not a project yet) creating the machine's repository, then
+#  choosing a deployment path — network install, unattended ISO, or guided ISO.
 # ════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +14,8 @@ source "${SCRIPT_DIR}/lib-flash.sh"
 source "${SCRIPT_DIR}/lib-flake.sh"
 # shellcheck source=lib-assets.sh
 source "${SCRIPT_DIR}/lib-assets.sh"
+# shellcheck source=lib-build.sh
+source "${SCRIPT_DIR}/lib-build.sh"
 FLAKE="$(resolve_flake)"
 load_age_assets
 
@@ -31,7 +34,26 @@ if [ "${IH_HAS_SETTINGS:-0}" = "1" ] && [ "${IH_SETTINGS_TRACKED:-0}" != "1" ]; 
     fi
 fi
 
-# ── 2. Deployment path ───────────────────────────────────────────────────────
+# ── 2. A repository for this machine (empty directory, project opted in) ─────
+# Without one, everything below builds the generic template this app shipped
+# from, which works but leaves the machine with no configuration of its own to
+# keep changing. The project's bootstrap program writes the repository into the
+# cwd; we then hand over to THAT repository's own wizard rather than carry on
+# here, because only it knows its own assets (an agenix key kept in the repo, say)
+# and its own flake style — this process was built from the template.
+if ! flake_in_cwd && [ -n "${IH_BOOTSTRAP:-}" ]; then
+    bootstrap_choice=$(gum choose --header "This directory is not a project yet." \
+        "Create a GitHub-managed repository here  (the machine tracks it)" \
+        "Continue without one  (build from the generic template)")
+    case "$bootstrap_choice" in
+      Create*)
+        "$IH_BOOTSTRAP" || { gum style --foreground 196 "Bootstrap did not finish — nothing was installed."; exit 1; }
+        exec nix run .
+        ;;
+    esac
+fi
+
+# ── 3. Deployment path ───────────────────────────────────────────────────────
 deploy_choices=(
     "Network install  (nixos-anywhere over SSH — no USB)"
     "Unattended ISO   (pre-seeded, installs with no interaction)"
@@ -40,72 +62,21 @@ deploy_choices=(
 [ "${IH_GUIDED:-1}" = "1" ] && deploy_choices+=("Guided ISO       (generic, choose identity on the target box)")
 choice=$(gum choose --header "How do you want to deploy?" "${deploy_choices[@]}")
 
+impure=()
 case "$choice" in
   Network*)
     exec bash "${SCRIPT_DIR}/deploy.sh" "$@"
     ;;
   Unattended*)
-    attr="installerIso"; allow_impure=1 ;;
+    attr="installerIso"
+    prepare_unattended_build || exit 1
+    ;;
   Guided*)
-    attr="guidedIso"; allow_impure=0 ;;
+    attr="guidedIso"
+    ;;
   *)
     echo "Nothing selected."; exit 1 ;;
 esac
 
-# Impure build triggers (builtins.getEnv): env-sourced secrets, and the untracked
-# per-root settings files (flakes ignore untracked files, so the dir is injected
-# by path via IH_SETTINGS_DIR).
-impure=()
-if [ "${allow_impure}" = "1" ]; then
-    if ls installer/*-settings.json >/dev/null 2>&1; then
-        impure=(--impure)
-        IH_SETTINGS_DIR="$(realpath installer)"
-        export IH_SETTINGS_DIR
-        echo ":: seeding installer/ settings into the build (--impure)"
-    fi
-    if jq -e 'any(.[]; .source.env != null)' "${IH_ASSETS:-/dev/null}" >/dev/null 2>&1; then
-        impure=(--impure)
-        echo ":: env-sourced secrets detected — building --impure"
-    fi
-    # An unattended ISO cannot ask on the box, so a required asset missing here
-    # would install a machine without it. Refuse before spending the build.
-    missing=()
-    while IFS=$'\t' read -r name env; do
-        [ -z "$name" ] && continue
-        [ -n "${!env:-}" ] || missing+=("${name} (\$${env})")
-    done < <(jq -r '.[]? | select(.required == true and .source.env != null and .source.file == null) | [.name, .source.env] | @tsv' "${IH_ASSETS:-/dev/null}" 2>/dev/null || true)
-    if [ "${#missing[@]}" -gt 0 ]; then
-        gum style --foreground 196 "Required asset(s) not set: ${missing[*]}" \
-            "Enter the project's devShell (direnv) so they are exported, then re-run."
-        exit 1
-    fi
-fi
-
-# Build in the foreground with live logs — a `gum spin` wrapper here would hide
-# the build output, so an evaluation/assertion failure looks like a silent exit
-# ("no error, no ISO") instead of showing the actual cause.
-gum style --foreground 212 "Building ${attr}… (build logs below)"
-# …and the last step of that build is one mksquashfs pass over the whole offline
-# closure. mksquashfs suppresses its progress bar when stdout is not a tty (under
-# `nix build` it never is), so the log stops dead after "Creating 4.0 filesystem
-# on nix-store.squashfs" for as long as the pass takes. Set expectations, or it
-# reads as a hang.
-gum style --faint \
-    "The build ends with a single mksquashfs pass over the whole offline closure." \
-    "mksquashfs prints nothing to a non-tty, so the log stops at \"Creating 4.0" \
-    "filesystem on nix-store.squashfs\" and stays there for several minutes." \
-    "That is the compression running, not a hang — watch CPU if in doubt."
-if ! nix build "${impure[@]}" "${FLAKE}#${attr}" --print-build-logs; then
-    gum style --foreground 196 "Build of ${attr} FAILED — see the log above for the cause."
-    exit 1
-fi
-
-iso=$(find -L result/iso -name '*.iso' 2>/dev/null | head -1)
-if [ -n "$iso" ]; then
-    gum style --foreground 42 "ISO: $iso"
-    flash_iso "$iso"
-    echo "  Flash manually:  sudo dd if=\"$iso\" of=/dev/sdX bs=4M status=progress conv=fsync"
-    echo "  Or boot it directly in a VM to test the install."
-else
-    echo "Build finished but no ISO was found under ./result/iso" >&2
-fi
+build_iso "$attr" || exit 1
+show_iso

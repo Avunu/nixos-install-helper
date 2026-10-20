@@ -315,6 +315,54 @@ The template declares `age.secrets`, so your install modules must import
 agenix's NixOS module, and should put the SSH host keys in `age.identityPaths`
 (agenix's default when openssh is enabled).
 
+## Bootstrapping a repository: `bootstrap`
+
+`hostRepo`/`new-host` is one way a generic project makes a per-machine
+repository. `bootstrap` is the general hook for any other: pass a program (a
+derivation with a `mainProgram`) that writes the project's repository into the
+**current directory**, and the wizard offers it whenever it is started
+somewhere that is not a project yet:
+
+```sh
+mkdir my-host && cd my-host
+nix run github:Owner/project
+#   → settings questionnaire
+#   → "Create a GitHub-managed repository here" | "Continue without one"
+```
+
+Choosing the repository runs the program, then `exec`s `nix run .` in the
+result, so the ISO or network install is driven by the **repository's own**
+wizard — with its own assets (an agenix key kept in the repo is decrypted via
+`ageFile`), its own flake style and its tracked settings — not by the template
+the app was built from. Choosing the other builds the template exactly as
+before. `nix run github:Owner/project#bootstrap` runs the program on its own.
+
+The program is not sandboxed from the app: it runs with `IH_SCHEMA`, `IH_HINTS`,
+`IH_HAS_SETTINGS` (so it can call `"$IH_SCRIPTS/configure.sh"` when the wizard
+has not), `IH_ROOTS`, `IH_PRIMARY_ROOT` and `IH_SCRIPTS`. Source
+`"$IH_SCRIPTS/lib-repo.sh"` for the shared steps:
+
+| Function | Does |
+|----------|------|
+| `repo_init_commit <dir> <message>` | `git init`, stage everything, `nix flake lock`, commit — in that order, because a flake in git sees only tracked files |
+| `repo_publish <dir> <owner/name> [topic]` | offers `gh repo create --private --source . --push` (`IH_REPO_PUBLIC=1` for public); never fatal; declines under `IH_NONINTERACTIVE` |
+
+The contract it must keep: leave a **committed** flake in the cwd, and exit 0.
+
+nixos-dev-host is the reference: `lib.mkHost` passes a program that fills in
+`templates/host-repo` (flake, settings, agenix key, read-only token) and
+publishes it.
+
+### Which flake the apps build
+
+`wizard`, `install` and `deploy` build `.` when the working directory has a
+`flake.nix`, otherwise the flake that shipped the app (`IH_FLAKE_DEFAULT`, as an
+explicit `path:` reference), and `IH_FLAKE_REF` overrides both. With none of the
+three they stop with a message instead of letting nix search upward for a
+`flake.nix`. The ISO build itself (`lib-build.sh`) is the same for all of them:
+untracked `installer/*-settings.json` and env-sourced assets make it `--impure`,
+and a required asset with no value stops it before the build.
+
 ### `ageFile` asset sources
 
 An asset may name `source.ageFile` (relative to the project root) alongside

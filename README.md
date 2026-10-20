@@ -56,6 +56,11 @@ A project can also mint one private **host repo** per machine (`hostRepo`,
 to whatever it publishes, authenticated by a read-only GitHub token kept as an
 agenix secret.
 
+A project can also pass `bootstrap = <program>`: started in an empty directory,
+the wizard then offers to create the project's repository there first and
+continues from that repository's own `nix run` (see
+[`docs/integration.md`](docs/integration.md#bootstrapping-a-repository-bootstrap)).
+
 For the full option reference — settings files, secret assets, gum hints,
 schema exclusions, guided vs. unattended tradeoffs — see
 [`docs/integration.md`](docs/integration.md).

@@ -134,6 +134,20 @@ args@{
   # first-boot reconcile, and a free-text prompt is the only widget the boot script
   # has. Keep the list to things that do not move the closure.
   guidedPrompts ? [ ],
+  # A program (a derivation with a mainProgram) that creates this project's
+  # per-machine repository in the CURRENT directory — the repository a machine
+  # then tracks. The wizard offers it when it is started in a directory that is
+  # not a project (`mkdir host && cd host && nix run github:Owner/project`), and
+  # it is also the `bootstrap` app. It must leave a committed flake behind and
+  # exit 0; the wizard then continues with that flake's own `nix run`, so what
+  # it builds is the repository, not the template this app shipped from.
+  #
+  # It runs with the app's environment (IH_SCHEMA / IH_HINTS / IH_HAS_SETTINGS
+  # for configure.sh, IH_ROOTS, IH_PRIMARY_ROOT) and IH_SCRIPTS, the directory
+  # holding this framework's scripts — lib-repo.sh there does the git / lock /
+  # publish steps. null: no repository is offered, and an empty directory builds
+  # the template.
+  bootstrap ? null,
 }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -881,44 +895,58 @@ let
   );
 
   # ── Apps (gum-driven; run from the project working tree) ───────────────────
-  mkApp = name: runtimeInputs: {
-    type = "app";
-    program = lib.getExe (
-      pkgs.writeShellApplication {
-        inherit name runtimeInputs;
-        text = ''
-          export IH_SCHEMA=${schemaJson}
-          export IH_HINTS=${pkgs.writeText "hints.json" (builtins.toJSON hints)}
-          export IH_ASSETS=${
-            pkgs.writeText "assets.json" (
-              builtins.toJSON (map (a: removeAttrs a [ "resolvedSource" ]) resolvedAssets)
-            )
-          }
-          export IH_FLAKE_STYLE=${flakeStyle}
-          export IH_DISK_NAME=${diskName}
-          export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
-          export IH_GUIDED=${if guided then "1" else "0"}
-          # Settings are tracked files of the project (a host repo): nothing for
-          # the wizard to collect, nothing to inject impurely.
-          export IH_SETTINGS_TRACKED=${if flakeStyle == "repo" then "1" else "0"}
-          # The flake that shipped this app. Scripts build it when the cwd is not a
-          # project (`nix run github:Owner/repo` from an empty directory).
-          export IH_FLAKE_DEFAULT=${self}
-          ${lib.optionalString (localFlakeNix != null) ''
-            # Local style: what a network install seeds into /etc/nixos, the same
-            # synthesized flake + placeholder module + per-root settings the ISOs seed.
-            export IH_LOCAL_FLAKE_NIX=${localFlakeNix}
-            export IH_LOCAL_MODULE_NIX=${localModuleNix}
+  # `command` is what the app finally runs, after the environment below is set;
+  # the default is the framework script of the same name.
+  mkAppFor =
+    {
+      name,
+      runtimeInputs,
+      command ? ''exec ${pkgs.bash}/bin/bash ${frameworkSelf}/scripts/${name}.sh "$@"'',
+    }:
+    {
+      type = "app";
+      program = lib.getExe (
+        pkgs.writeShellApplication {
+          inherit name runtimeInputs;
+          text = ''
+            export IH_SCHEMA=${schemaJson}
+            export IH_HINTS=${pkgs.writeText "hints.json" (builtins.toJSON hints)}
+            export IH_ASSETS=${
+              pkgs.writeText "assets.json" (
+                builtins.toJSON (map (a: removeAttrs a [ "resolvedSource" ]) resolvedAssets)
+              )
+            }
+            export IH_FLAKE_STYLE=${flakeStyle}
+            export IH_DISK_NAME=${diskName}
+            export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
+            export IH_GUIDED=${if guided then "1" else "0"}
             export IH_ROOTS=${pkgs.writeText "roots.json" (builtins.toJSON resolvedRoots)}
-          ''}
-          # Invoke through bash explicitly: scripts copied into the store from git
-          # keep mode 0644 (non-executable), so exec'ing them directly fails with
-          # "Permission denied". bash <path> needs no executable bit.
-          exec ${pkgs.bash}/bin/bash ${frameworkSelf}/scripts/${name}.sh "$@"
-        '';
-      }
-    );
-  };
+            export IH_PRIMARY_ROOT=${lib.escapeShellArg (if primaryRoot == null then "" else primaryRoot)}
+            export IH_SCRIPTS=${frameworkSelf}/scripts
+            # Settings are tracked files of the project (a host repo): nothing for
+            # the wizard to collect, nothing to inject impurely.
+            export IH_SETTINGS_TRACKED=${if flakeStyle == "repo" then "1" else "0"}
+            # The flake that shipped this app. Scripts build it when the cwd is not a
+            # project (`nix run github:Owner/repo` from an empty directory).
+            export IH_FLAKE_DEFAULT=${self}
+            ${lib.optionalString (bootstrap != null) ''
+              export IH_BOOTSTRAP=${lib.getExe bootstrap}
+            ''}
+            ${lib.optionalString (localFlakeNix != null) ''
+              # Local style: what a network install seeds into /etc/nixos, the same
+              # synthesized flake + placeholder module + per-root settings the ISOs seed.
+              export IH_LOCAL_FLAKE_NIX=${localFlakeNix}
+              export IH_LOCAL_MODULE_NIX=${localModuleNix}
+            ''}
+            ${command}
+          '';
+        }
+      );
+    };
+  # Invoked through bash explicitly (the default `command`): scripts copied into
+  # the store from git keep mode 0644 (non-executable), so exec'ing them
+  # directly fails with "Permission denied". bash <path> needs no executable bit.
+  mkApp = name: runtimeInputs: mkAppFor { inherit name runtimeInputs; };
 in
 {
   # `localFlakeNix` / `localModuleNix` (both null for remote) are exposed for
@@ -1045,6 +1073,24 @@ in
       nixosAnywhere.packages.${system}.default
     ];
   }
+  // lib.optionalAttrs (bootstrap != null) {
+    # The same program the wizard offers in an empty directory, run on its own.
+    bootstrap = mkAppFor {
+      name = "bootstrap";
+      runtimeInputs = [
+        pkgs.age
+        pkgs.gh
+        pkgs.git
+        pkgs.gum
+        pkgs.jq
+        pkgs.nix
+        pkgs.openssh
+        pkgs.util-linux
+        pkgs.iproute2
+      ];
+      command = ''exec ${lib.getExe bootstrap} "$@"'';
+    };
+  }
   // lib.optionalAttrs (hostRepoTemplate != null) {
     new-host =
       let
@@ -1070,8 +1116,6 @@ in
             export IH_HOST_PREFIX=${lib.escapeShellArg (hostRepo.prefix or "host-")}
             export IH_HOST_TOPIC=${lib.escapeShellArg (hostRepo.topic or "nixos-host")}
             export IH_ADMIN_KEYS=${pkgs.writeText "admin-keys.json" (builtins.toJSON hostRepo.adminKeys)}
-            export IH_ROOTS=${pkgs.writeText "roots.json" (builtins.toJSON resolvedRoots)}
-            export IH_PRIMARY_ROOT=${lib.escapeShellArg (if primaryRoot == null then "" else primaryRoot)}
             exec ${app.program} "$@"
           ''
         );

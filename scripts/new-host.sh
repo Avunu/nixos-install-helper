@@ -19,6 +19,8 @@ set -euo pipefail
 # ════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-repo.sh
+source "${SCRIPT_DIR}/lib-repo.sh"
 
 gum style --border double --padding "1 2" --border-foreground 212 \
     "New host repository" "One private repo per machine; the machine tracks it."
@@ -102,19 +104,8 @@ printf '%s\n' "$TOKEN" \
 unset TOKEN
 
 # ── 5. Lock, commit, push ────────────────────────────────────────────────────
-git -C "$DIR" init -q -b main
-git -C "$DIR" add -A
-echo ":: locking flake inputs"
-nix flake lock "$DIR"
-git -C "$DIR" add flake.lock
-git -C "$DIR" commit -q -m "init: ${NAME}"
-
-if gum confirm "Create private repo ${IH_HOST_OWNER}/${NAME} on GitHub and push?"; then
-    (cd "$DIR" && gh repo create "${IH_HOST_OWNER}/${NAME}" --private --source . --push)
-    [ -n "${IH_HOST_TOPIC:-}" ] && gh repo edit "${IH_HOST_OWNER}/${NAME}" --add-topic "$IH_HOST_TOPIC"
-else
-    echo "Not pushed. Later:  cd ${NAME} && gh repo create ${IH_HOST_OWNER}/${NAME} --private --source . --push"
-fi
+repo_init_commit "$DIR" "init: ${NAME}"
+repo_publish "$DIR" "${IH_HOST_OWNER}/${NAME}" "${IH_HOST_TOPIC:-}" || true
 
 gum style --foreground 42 "Created ${DIR}" \
     "Install it:  cd ${NAME} && nix run" \
