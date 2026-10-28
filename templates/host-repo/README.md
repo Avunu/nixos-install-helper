@@ -1,47 +1,47 @@
-# @IH_NAME@
+# @REPO@
 
-NixOS configuration for **@IH_HOST@**. The machine tracks this repository
-(`@IH_REPO@`): push to the default branch and its next daily upgrade switches to
-it. Nothing on the machine itself needs editing; `/etc/nixos` is not used.
+NixOS configuration for **@HOST@**. The machine tracks this repository
+(`github:@OWNER@/@REPO@`): push to the default branch and its next upgrade
+switches to it. `/etc/nixos` is not used.
 
 | File | What it holds |
 |------|---------------|
-| `*-settings.json` | the values the installer asked about (host name, user, disk, …) |
-| `local.nix` | anything else: extra packages, per-machine NixOS config |
+| `@ROOT@-settings.json` | the values the installer asked about (host name, user, disk, SSH keys, features) |
+| `host.nix` | anything else: extra packages, per-machine NixOS config |
+| `flake.lock` | the exact version of every input; update it here, never on the machine |
 | `secrets.nix` | who can decrypt each file in `secrets/` |
-| `secrets/github-token.age` | the read-only GitHub token (just the `github_pat_…` value), so the machine can fetch this private repo |
-| `secrets/ssh-host-key.age` | the machine's SSH host key, encrypted to the admins only; the installer decrypts it and gives it to the machine, which then uses it to decrypt its own secrets |
+| `secrets/key.age` | the machine's agenix identity, encrypted to the operators only |
+| `secrets/github-token.age` | the read-only GitHub token the machine fetches this repository with (private repos) |
+
+Flake input updates arrive as dependabot pull requests, merged once the
+configuration still evaluates (`.github/workflows/eval.yml`).
 
 ## Install or reinstall
 
 ```sh
-nix run          # wizard: network install (nixos-anywhere) or an unattended ISO
+nix run          # network install (nixos-anywhere) or an offline ISO
 ```
 
-The installer decrypts `secrets/ssh-host-key.age` with your SSH key (any
-`~/.ssh/id_*` with a matching `.pub`, or the paths in `IH_AGE_IDENTITY`,
-colon-separated).
+The installer decrypts `secrets/key.age` with your SSH key (any `~/.ssh/id_*`
+with a matching `.pub`, or the paths in `IH_AGE_IDENTITY`, colon-separated) and
+writes it to `/etc/agenix/key` on the machine. Because the key lives in this
+repository and not on the machine, a reinstall onto a new disk decrypts the
+same secrets without re-keying anything.
 
 ## Secrets
 
 ```sh
 nix develop
-ragenix -e secrets/<name>.age            # edit
-ragenix -r                               # re-encrypt after changing secrets.nix
+agenix -e secrets/<name>.age     # create or edit (identity: -i ~/.ssh/id_ed25519)
+agenix -r                        # re-encrypt after changing secrets.nix
 ```
 
-New secrets are declared in `secrets.nix` and, for the machine, as
-`age.secrets.<name>.file = ./secrets/<name>.age;` in `local.nix`.
+Declare a new secret in `secrets.nix`, encrypted to `admins ++ [ host ]`, then
+give the machine `age.secrets.<name>.file = ./secrets/<name>.age;` in `host.nix`.
 
 ### Rotating the GitHub token
 
-The token is a fine-grained PAT with **Contents: read-only** on the host repos
-(and any private flake inputs). Before it expires:
-
-```sh
-nix develop
-ragenix -e secrets/github-token.age   # just the new token, nothing else
-```
-
-Push, and wait for the machine to pick it up (it fetches with the old token and
-activates the new one) before revoking the old one.
+A fine-grained personal access token with **Contents: read-only** on this
+repository. Before it expires, write `access-tokens = github.com=<new token>` to
+`secrets/github-token.age` with `agenix -e`, push, and wait for the machine to
+pick it up before revoking the old one.
