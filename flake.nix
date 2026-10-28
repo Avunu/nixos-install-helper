@@ -47,6 +47,18 @@
           nixosAnywhere = nixos-anywhere;
         };
 
+        # mkProject for machines that each live in their own GitHub repository:
+        # a project re-exports it with its module filled in, its installer
+        # bootstraps those repositories, and each repository's flake calls it.
+        mkHost = import ./lib/mk-host.nix {
+          inherit lib;
+          inherit (self.lib) mkProject;
+          frameworkSelf = self;
+        };
+
+        # Where lib.mkHost installs a machine's agenix identity.
+        agenixKeyPath = import ./lib/agenix-key-path.nix;
+
         # Evaluated-options → Draft-07 JSON Schema (attrset).
         optionsToJsonSchema = a: import ./lib/options-to-schema.nix ({ inherit lib; } // a);
 

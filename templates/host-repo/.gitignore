@@ -1,3 +1,6 @@
+# build output and per-checkout state
 result
 result-*
 .direnv/
+# what `nix run` writes before the first commit; settings live in @ROOT@-settings.json
+installer/

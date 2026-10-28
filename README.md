@@ -51,10 +51,12 @@ nix run .#install          # build/flash an ISO, or install now
 nix run .#deploy -- root@<ip>   # nixos-anywhere straight to a reachable target
 ```
 
-A project can also mint one private **host repo** per machine (`hostRepo`,
-`nix run .#new-host`): the machine installs from that repo and keeps switching
-to whatever it publishes, authenticated by a read-only GitHub token kept as an
-agenix secret.
+A project whose machines each live in their own repository can build on
+**`lib.mkHost`** instead: its installer, started in an empty directory,
+bootstraps a private **host repo** for the machine — a generated agenix
+identity, a read-only GitHub token, the installer's answers — and the machine
+installs from that repo and keeps switching to whatever it publishes (see
+[`docs/integration.md`](docs/integration.md#host-repos-libmkhost)).
 
 A project can also pass `bootstrap = <program>`: started in an empty directory,
 the wizard then offers to create the project's repository there first and

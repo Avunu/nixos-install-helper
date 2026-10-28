@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════════
 #  lib-repo.sh — turn a directory of files into a committed (and, if wanted,
-#  published) flake repository. Sourced by new-host.sh, and available to a
-#  project's own bootstrap program as "$IH_SCRIPTS/lib-repo.sh".
+#  published) flake repository. Sourced by bootstrap-host.sh (lib.mkHost), and available to any
+#  project bootstrap program as "$IH_SCRIPTS/lib-repo.sh".
 #
 #  Needs git, nix, gum and, for repo_publish, gh on PATH.
 # ════════════════════════════════════════════════════════════════════════════
