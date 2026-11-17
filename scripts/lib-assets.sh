@@ -10,10 +10,17 @@
 #  ordinary env-sourced asset. A host repo keeps its machine's SSH host key this
 #  way: encrypted to the admins, decrypted only at install time.
 #
-#  Identities: IH_AGE_IDENTITY (colon-separated paths) when set, otherwise every
+#  Identities: IH_AGE_IDENTITY (colon-separated paths) when set. Otherwise the
+#  project's own (mkProject `ageIdentities`, exported as IH_AGE_IDENTITY_DEFAULT:
+#  colon-separated, relative to the working tree or absolute), then every
 #  ~/.ssh/id_* private key with an ed25519 or RSA .pub beside it. age reads the
 #  .pub to skip non-matching keys, so a passphrase is only asked for the key the
 #  file was actually encrypted to.
+#
+#  An identity may be a plugin's: the stub `age-plugin-yubikey --identity`
+#  prints names a key on a YubiKey and holds none. age finds the plugin on PATH,
+#  where mkProject's `agePlugins` puts it, and the plugin asks for the PIN and
+#  the touch on the terminal.
 # ════════════════════════════════════════════════════════════════════════════
 
 age_identities() {
@@ -24,6 +31,13 @@ age_identities() {
             [ -r "$f" ] && ids+=(-i "$f")
         done
     else
+        if [ -n "${IH_AGE_IDENTITY_DEFAULT:-}" ]; then
+            local IFS=:
+            for f in $IH_AGE_IDENTITY_DEFAULT; do
+                [ -r "$f" ] && ids+=(-i "$f")
+            done
+            unset IFS
+        fi
         for f in "$HOME"/.ssh/id_*; do
             case "$f" in *.pub) continue ;; esac
             [ -r "$f" ] && [ -r "$f.pub" ] || continue
@@ -44,7 +58,7 @@ load_age_assets() {
             mapfile -t ids < <(age_identities)
         fi
         if [ "${#ids[@]}" -eq 0 ]; then
-            echo "!! ${file}: no SSH identity to decrypt it with (set IH_AGE_IDENTITY)" >&2
+            echo "!! ${file}: no identity to decrypt it with (set IH_AGE_IDENTITY)" >&2
             return 0
         fi
         if value=$(age -d "${ids[@]}" "$file"); then

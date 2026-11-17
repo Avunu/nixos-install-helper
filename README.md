@@ -63,6 +63,14 @@ the wizard then offers to create the project's repository there first and
 continues from that repository's own `nix run` (see
 [`docs/integration.md`](docs/integration.md#bootstrapping-a-repository-bootstrap)).
 
+A project with several machines calls `mkProject` once per machine
+(`hostAttr`, `diskName = null`, `questionnaire = false`), can keep its install
+secrets encrypted to YubiKeys (`agePlugins`, `ageIdentities`), and can run a
+program on the workstation between the kexec and the partitioning
+(`preInstall`): see
+[One machine of several](docs/integration.md#one-machine-of-several-hostattr-diskname--null-questionnaire)
+and [Pre-install hook](docs/integration.md#pre-install-hook-preinstall).
+
 For the full option reference — settings files, secret assets, gum hints,
 schema exclusions, guided vs. unattended tradeoffs — see
 [`docs/integration.md`](docs/integration.md).

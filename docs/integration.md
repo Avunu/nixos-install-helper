@@ -409,7 +409,9 @@ An asset may name `source.ageFile` (relative to the project root) alongside
 `source.env`. When the variable is empty, the wizard, `install` and `deploy`
 decrypt the file with the operator's SSH key and export it, so the rest of the
 pipeline sees an ordinary env-sourced asset. Identities: `IH_AGE_IDENTITY`
-(colon-separated) or every `~/.ssh/id_*` with an ed25519/RSA `.pub` beside it.
+(colon-separated), or the project's `ageIdentities` and then every `~/.ssh/id_*`
+with an ed25519/RSA `.pub` beside it (see
+[Plugin identities](#plugin-identities-for-agefile-assets-ageplugins-ageidentities)).
 
 ## Deployment paths
 
@@ -447,3 +449,84 @@ summary as "not on this media". The owner turns them back on later, online,
 through whatever edits `<root>-settings.json` — the project's settings UI should
 say that a network is needed, since this framework cannot know which values are
 heavy.
+
+## One machine of several: `hostAttr`, `diskName = null`, `questionnaire`
+
+`mkProject` describes one install. A project with several machines (a cluster)
+calls it once per machine, through a helper of its own that holds what they
+share, and re-exports each call's `deploy` app under the machine's name:
+
+```nix
+installer = name:
+  nixos-install-helper.lib.mkProject {
+    inherit nixpkgs system self;
+    installModules = [ (machineModule name) ];
+    hostAttr = name;          # nixosConfigurations.<name>, which the flake exports
+    diskName = null;          # the machine's disko config names every device
+    questionnaire = false;    # nothing to ask: the flake describes the machine
+    lifecycle = false;        # the machines have their own way of following a repository
+    guided = false;
+  };
+
+apps.${system} = lib.mapAttrs' (name: _:
+  lib.nameValuePair "install-${name}" (installer name).apps.${system}.deploy
+) machines;
+```
+
+| Argument | Default | What it changes |
+| --- | --- | --- |
+| `hostAttr` | `"install"` | The `nixosConfigurations` attribute the unattended ISO and `deploy` install. `mkProject` also returns its own system under that name; a project that already builds `nixosConfigurations.<name>` exports that one instead, and it is what gets installed. |
+| `diskName` | `"main"` | `null`: no `--disk` mapping. The disko config is complete (any number of disks, each device named), nothing is read from or written to `disk.<name>.device`, and only `deploy` is offered: the ISO packages and their checks are left out, and the wizard goes straight to the network install. |
+| `questionnaire` | `true` | `false`: no settings schema is derived (the install modules' options are not evaluated for it), `configure` is not exported and the wizard asks nothing. |
+| `lifecycle` | `true` | `false`: the framework's first-boot reconcile and auto-upgrade stay off. |
+
+Each default is the behaviour before these existed.
+
+## Plugin identities for `ageFile` assets: `agePlugins`, `ageIdentities`
+
+An `ageFile` may be encrypted to a plugin recipient, a YubiKey's for one:
+
+```nix
+agePlugins = [ pkgs.age-plugin-yubikey ];
+ageIdentities = [ "secrets/master/yubikey-1.pub" "secrets/master/yubikey-2.pub" ];
+```
+
+`agePlugins` go on the apps' `PATH`, where age looks for `age-plugin-<name>`.
+`ageIdentities` are tried, in order, before the operator's SSH keys: paths
+relative to the working tree or absolute. A YubiKey's identity file is the stub
+`age-plugin-yubikey --identity` prints; it holds no key and is committed. The
+plugin asks for the PIN and the touch on the terminal. `IH_AGE_IDENTITY` still
+replaces the whole list.
+
+## Pre-install hook: `preInstall`
+
+Some things have to happen on the target before the system can even be built: a
+key made on its TPM, whose public half the flake encrypts secrets to; disk
+secrets that must be in the installer's memory when disko runs and nowhere
+afterwards. `preInstall` is a program for that. With it, `deploy` runs
+nixos-anywhere twice:
+
+1. `nixos-anywhere --phases kexec`: the target boots the NixOS installer.
+2. The hook, on the workstation, in the project's working tree.
+3. `nixos-anywhere --phases disko,install,reboot`, which evaluates the flake
+   only now.
+
+The hook's environment:
+
+| Variable | What it is |
+| --- | --- |
+| `IH_TARGET` | The SSH target, now the NixOS installer (root). |
+| `IH_HOST_ATTR` | The flake attribute being installed. |
+| `IH_EXTRA_FILES` | A directory copied onto the installed system (`--extra-files`). Write `$IH_EXTRA_FILES/var/lib/x/key` to install `/var/lib/x/key`. |
+| `IH_DISK_KEYS` | A directory on a tmpfs (`$XDG_RUNTIME_DIR`, else `/dev/shm`). Each `$IH_DISK_KEYS/<absolute path>` is put at `<absolute path>` on the installer before partitioning (`--disk-encryption-keys`), for disko's `passwordFile` and hooks. It is not copied to the installed system, and is removed here when `deploy` ends. |
+
+A hook that exits non-zero stops the install before anything is partitioned.
+Whatever it adds to the working tree has to be `git add`ed to be part of the
+build, like any other file of a flake.
+
+`deploy` passes everything after the target to nixos-anywhere (`-i <key>`,
+`--ssh-option`, `--kexec <tarball>`), so a hook that needs the same SSH options
+takes them from whoever started `deploy`. Two variables are for such a caller:
+`IH_ASSUME_YES=1` skips the "this WIPES its disks" question it has already
+asked, and `IH_STORE_PATHS="<disko script> <toplevel>"` installs what is
+already built instead of evaluating the flake.

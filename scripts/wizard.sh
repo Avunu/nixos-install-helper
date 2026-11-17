@@ -54,6 +54,11 @@ if ! flake_in_cwd && [ -n "${IH_BOOTSTRAP:-}" ]; then
 fi
 
 # ── 3. Deployment path ───────────────────────────────────────────────────────
+# A project with no single install disk (mkProject diskName = null) has no ISO:
+# the network install is the one path.
+if [ "${IH_ISO:-1}" != "1" ]; then
+    exec bash "${SCRIPT_DIR}/deploy.sh" "$@"
+fi
 deploy_choices=(
     "Network install  (nixos-anywhere over SSH — no USB)"
     "Unattended ISO   (pre-seeded, installs with no interaction)"

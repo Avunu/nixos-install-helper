@@ -16,6 +16,11 @@ source "${SCRIPT_DIR}/lib-build.sh"
 FLAKE="$(resolve_flake)"
 load_age_assets
 
+if [ "${IH_ISO:-1}" != "1" ]; then
+    gum style "This project installs over the network only:" "  nix run ${FLAKE}#deploy -- root@<ip-address>"
+    exit 0
+fi
+
 install_choices=("Unattended ISO  (pre-seeded, per-host, installs with no interaction)")
 [ "${IH_GUIDED:-1}" = "1" ] && install_choices+=("Guided ISO      (generic, boots into the menu, choose identity on the box)")
 install_choices+=("Network install (nixos-anywhere over SSH to a reachable target)")
