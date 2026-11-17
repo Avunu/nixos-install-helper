@@ -4,7 +4,32 @@ set -euo pipefail
 #  deploy.sh — network install via nixos-anywhere. Workstation-side.
 #  Stages secret assets (and, for local style, the seeded /etc/nixos) into a tree
 #  and pushes them with --extra-files.
-#  Usage:  nix run .#deploy -- root@<ip>
+#  Usage:  nix run .#deploy -- root@<ip> [nixos-anywhere arguments…]
+#
+#  Everything after the target is handed to nixos-anywhere as it is: -i <key>,
+#  --ssh-option, --kexec <tarball>, --build-on, …
+#
+#  Environment a caller may set (an operations tool driving this, a test):
+#    IH_ASSUME_YES=1     do not ask before wiping: the caller already did.
+#    IH_STORE_PATHS      "<disko script> <toplevel>", already built: install
+#                        these instead of evaluating the flake.
+#
+#  With a pre-install hook (mkProject `preInstall`, IH_PRE_INSTALL) the install
+#  is two nixos-anywhere runs with the hook between them: `--phases kexec`, the
+#  hook, then `--phases disko,install,reboot`. The hook runs here, on the
+#  workstation, in the project's working tree, with:
+#    IH_TARGET           the SSH target, now running the NixOS installer
+#    IH_HOST_ATTR        the flake attribute being installed
+#    IH_EXTRA_FILES      a directory copied onto the installed system
+#                        (--extra-files): write <dir>/<absolute path> to add one
+#    IH_DISK_KEYS        a directory on a tmpfs, never copied to the installed
+#                        system: each <dir>/<absolute path> in it is put at
+#                        <absolute path> on the installer before partitioning
+#                        (--disk-encryption-keys), where disko and its hooks
+#                        read it, and is gone at the reboot.
+#  The flake is evaluated for the system only after the hook returns, so what
+#  the hook writes into the working tree (and `git add`s) is part of what is
+#  installed. A hook that fails stops the install with the disks untouched.
 # ════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,9 +42,23 @@ load_age_assets
 TARGET="${1:-}"
 [ -z "$TARGET" ] && TARGET=$(gum input --header "Target SSH host" --placeholder "root@192.0.2.10")
 [ -z "$TARGET" ] && { echo "No target host given."; exit 1; }
+# What follows the target is nixos-anywhere's.
+passthrough=()
+[ "$#" -gt 1 ] && passthrough=("${@:2}")
+HOST_ATTR="${IH_HOST_ATTR:-install}"
 
 STAGE=$(mktemp -d)
-trap 'rm -rf "$STAGE"' EXIT
+# Disk secrets wait here between the hook and the upload, so in memory when the
+# machine has a tmpfs to offer, and under a directory only this user can enter.
+KEYS=""
+for base in "${XDG_RUNTIME_DIR:-}" /dev/shm; do
+    if [ -n "$base" ] && [ -d "$base" ] && [ -w "$base" ]; then
+        KEYS=$(mktemp -d -p "$base" ih-disk-keys.XXXXXX)
+        break
+    fi
+done
+[ -n "$KEYS" ] || KEYS=$(mktemp -d)
+trap 'rm -rf "$STAGE" "$KEYS"' EXIT
 
 # Per-root settings written by configure.sh. A flake only sees git-TRACKED files,
 # so untracked ones reach the evaluation by path (IH_SETTINGS_DIR, --impure) —
@@ -97,7 +136,40 @@ if [ -n "$(find "$STAGE" -type f 2>/dev/null)" ]; then
     extra=(--extra-files "$STAGE")
 fi
 
-gum confirm "Install ${FLAKE}#install onto ${TARGET}? This WIPES its disks." || { echo "Aborted."; exit 1; }
+if [ "${IH_ASSUME_YES:-0}" != "1" ]; then
+    gum confirm "Install ${FLAKE}#${HOST_ATTR} onto ${TARGET}? This WIPES its disks." || { echo "Aborted."; exit 1; }
+fi
+
+# ── Pre-install hook ─────────────────────────────────────────────────────────
+# Into the installer first, then the hook, then everything else. The phases
+# below are what is left for the install proper.
+phases=()
+if [ -n "${IH_PRE_INSTALL:-}" ]; then
+    echo ":: booting the installer on ${TARGET} (kexec)"
+    # nixos-anywhere wants to be told what it would install even when asked for
+    # the kexec alone. It builds neither: that is the second run's, after the hook.
+    if [ -n "${IH_STORE_PATHS:-}" ]; then
+        # shellcheck disable=SC2086  # two paths, split on purpose
+        what=(--store-paths $IH_STORE_PATHS)
+    else
+        what=(--flake "${FLAKE}#${HOST_ATTR}")
+    fi
+    nixos-anywhere --phases kexec "${passthrough[@]}" "${what[@]}" --target-host "$TARGET"
+    echo ":: pre-install hook"
+    IH_TARGET="$TARGET" IH_HOST_ATTR="$HOST_ATTR" IH_EXTRA_FILES="$STAGE" IH_DISK_KEYS="$KEYS" \
+        "$IH_PRE_INSTALL" || { echo "Aborted: the pre-install hook failed. Nothing was partitioned." >&2; exit 1; }
+    phases=(--phases "disko,install,reboot")
+    # The hook may have staged files of its own.
+    if [ -n "$(find "$STAGE" -type f 2>/dev/null)" ]; then
+        extra=(--extra-files "$STAGE")
+    fi
+fi
+
+# Each file the hook left under KEYS goes to the same path on the installer.
+disk_keys=()
+while IFS= read -r -d '' f; do
+    disk_keys+=(--disk-encryption-keys "/${f#"$KEYS"/}" "$f")
+done < <(find "$KEYS" -type f -print0 2>/dev/null)
 
 # ── Build + install ──────────────────────────────────────────────────────────
 # nixos-anywhere evaluates --flake purely and has no --impure, so untracked
@@ -107,14 +179,22 @@ gum confirm "Install ${FLAKE}#install onto ${TARGET}? This WIPES its disks." || 
 #
 # Not `exec`: the EXIT trap has to run, or the staged tree — the private key
 # included — outlives the deploy in /tmp.
-if [ -n "$SETTINGS_DIR" ] && ls "$SETTINGS_DIR"/*-settings.json >/dev/null 2>&1; then
-    export IH_SETTINGS_DIR="$SETTINGS_DIR"
-    echo ":: building with settings from ${SETTINGS_DIR} (--impure)"
-    cfg="${FLAKE}#nixosConfigurations.install.config.system.build"
-    disko=$(nix build --impure --no-link --print-out-paths "${cfg}.diskoScript")
-    toplevel=$(nix build --impure --no-link --print-out-paths "${cfg}.toplevel")
-    nixos-anywhere "${extra[@]}" --store-paths "$disko" "$toplevel" --target-host "$TARGET"
+common=("${phases[@]}" "${extra[@]}" "${disk_keys[@]}" "${passthrough[@]}")
+
+if [ -n "${IH_STORE_PATHS:-}" ]; then
+    # shellcheck disable=SC2086  # two paths, split on purpose
+    nixos-anywhere "${common[@]}" --store-paths $IH_STORE_PATHS --target-host "$TARGET"
     exit $?
 fi
 
-nixos-anywhere "${extra[@]}" --flake "${FLAKE}#install" --target-host "$TARGET"
+if [ -n "$SETTINGS_DIR" ] && ls "$SETTINGS_DIR"/*-settings.json >/dev/null 2>&1; then
+    export IH_SETTINGS_DIR="$SETTINGS_DIR"
+    echo ":: building with settings from ${SETTINGS_DIR} (--impure)"
+    cfg="${FLAKE}#nixosConfigurations.${HOST_ATTR}.config.system.build"
+    disko=$(nix build --impure --no-link --print-out-paths "${cfg}.diskoScript")
+    toplevel=$(nix build --impure --no-link --print-out-paths "${cfg}.toplevel")
+    nixos-anywhere "${common[@]}" --store-paths "$disko" "$toplevel" --target-host "$TARGET"
+    exit $?
+fi
+
+nixos-anywhere "${common[@]}" --flake "${FLAKE}#${HOST_ATTR}" --target-host "$TARGET"
