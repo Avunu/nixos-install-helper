@@ -118,6 +118,10 @@
       # ── Example consumer (also a smoke-test for evaluation) ──────────────────
       # `nix eval .#examples.<system>.minimal.settingsSchema` exercises the whole
       # mkProject path on a tiny options-bearing module.
-      examples = forAllSystems (system: import ./examples/minimal { inherit self nixpkgs system; });
+      examples = forAllSystems (
+        system:
+        import ./examples/minimal { inherit self nixpkgs system; }
+        // import ./examples/cluster-node { inherit self nixpkgs system; }
+      );
     };
 }
