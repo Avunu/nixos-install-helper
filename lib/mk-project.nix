@@ -46,8 +46,42 @@ args@{
   # disko --disk mapping. diskDevice "" → auto-read from the install system's
   # config.disko.devices.disk.<diskName>.device (or chosen interactively on a
   # guided ISO if the module leaves it unset).
+  #
+  # diskName = null: the project's disko config is complete as it stands (every
+  # device named, any number of disks), so there is no single device to choose
+  # or override. Only the network deploy is offered then: the ISOs install
+  # through `disko-install --disk <name> <device>` and have no such pair to pass.
   diskName ? "main",
   diskDevice ? "",
+  # The flake attribute (`nixosConfigurations.<hostAttr>`) the unattended ISO and
+  # the network deploy install. The default is the system mkProject builds and
+  # returns as `nixosConfigurations.install`. A project that installs one of
+  # several machines per mkProject call names each here; with a name other than
+  # "install" the project's flake must export that system itself (mkProject
+  # returns it under the same name, to re-export or to ignore in favour of a
+  # system the project already builds).
+  hostAttr ? "install",
+  # false: no settings schema is derived and no questionnaire is offered (no
+  # `configure` app, nothing for the wizard to ask). For a project whose install
+  # is fully described by its flake; it also spares evaluating the install
+  # modules' options, which is what the schema is derived from.
+  questionnaire ? true,
+  # age plugins (packages) put on the apps' PATH, so an asset's `ageFile` can be
+  # encrypted to a plugin recipient: [ pkgs.age-plugin-yubikey ].
+  agePlugins ? [ ],
+  # Identity files `ageFile` assets are decrypted with, tried in this order
+  # before the operator's SSH keys: paths, relative to the project's working
+  # tree or absolute. A plugin identity (the stub `age-plugin-yubikey
+  # --identity` prints) holds no private key and belongs in the repository.
+  # IH_AGE_IDENTITY, when set, still replaces all of them.
+  ageIdentities ? [ ],
+  # A program (a derivation with a mainProgram, or a path) the network deploy
+  # runs on the WORKSTATION once the target is in the nixos-anywhere installer
+  # (after kexec) and before anything is partitioned. It is how a project does
+  # what must precede the build or the disks: make a key on the target's TPM and
+  # record its public half, fetch disk secrets. See docs/integration.md,
+  # "Pre-install hook". null: one nixos-anywhere run, as before.
+  preInstall ? null,
   # Import the framework lifecycle module (first-boot reconcile / autoUpgrade).
   # Set false when the project already manages its own post-install upgrade
   # (e.g. a client server config's initial-upgrade service).
@@ -201,7 +235,13 @@ let
   detectedRoots = lib.filter (
     n: !(builtins.elem n baseOptionNames) && declaredHere 4 projOptions.${n}
   ) (builtins.attrNames projOptions);
-  resolvedRoots = if optionRoots != null then optionRoots else detectedRoots;
+  resolvedRoots =
+    if !questionnaire then
+      [ ]
+    else if optionRoots != null then
+      optionRoots
+    else
+      detectedRoots;
 
   # ── Per-root settings (FLAT files) ─────────────────────────────────────────
   # Each root's file holds that root's option VALUES at top level. `IH_SETTINGS_DIR`
@@ -571,8 +611,18 @@ let
   resolvedDiskDevice =
     if diskDevice != "" then
       diskDevice
+    else if diskName == null then
+      ""
     else
       (installSystem.config.disko.devices.disk.${diskName}.device or "");
+
+  preInstallProgram =
+    if preInstall == null then
+      null
+    else if lib.isDerivation preInstall then
+      lib.getExe preInstall
+    else
+      toString preInstall;
 
   # Asset targets the boot scripts copy via --extra-files (no secret material).
   assetTargets = map (a: {
@@ -608,7 +658,7 @@ let
         ;
       flakeSelf = self;
       manifest = {
-        hostAttr = if mode == "guided" then "installTemplate" else "install";
+        hostAttr = if mode == "guided" then "installTemplate" else hostAttr;
         inherit
           mode
           flakeStyle
@@ -786,9 +836,19 @@ let
               )
             }
             export IH_FLAKE_STYLE=${flakeStyle}
-            export IH_DISK_NAME=${diskName}
+            export IH_DISK_NAME=${lib.escapeShellArg (if diskName == null then "" else diskName)}
+            export IH_HOST_ATTR=${lib.escapeShellArg hostAttr}
+            export IH_ISO=${if diskName == null then "0" else "1"}
+            ${lib.optionalString (ageIdentities != [ ]) ''
+              export IH_AGE_IDENTITY_DEFAULT=${
+                lib.escapeShellArg (lib.concatMapStringsSep ":" toString ageIdentities)
+              }
+            ''}
+            ${lib.optionalString (preInstallProgram != null) ''
+              export IH_PRE_INSTALL=${lib.escapeShellArg preInstallProgram}
+            ''}
             export IH_HAS_SETTINGS=${if schemaHasProps then "1" else "0"}
-            export IH_GUIDED=${if guided then "1" else "0"}
+            export IH_GUIDED=${if guided && diskName != null then "1" else "0"}
             export IH_ROOTS=${pkgs.writeText "roots.json" (builtins.toJSON resolvedRoots)}
             export IH_PRIMARY_ROOT=${lib.escapeShellArg (if primaryRoot == null then "" else primaryRoot)}
             export IH_SCRIPTS=${frameworkSelf}/scripts
@@ -838,11 +898,16 @@ assert lib.assertMsg (hostRepo == null) ''
   nixosConfigurations = {
     install = installSystem;
     installTemplate = templateSystem;
-  };
+  }
+  // lib.optionalAttrs (hostAttr != "install") { ${hostAttr} = installSystem; };
 
   packages.${system} = {
     # Nested union schema (back-compat).
     settingsSchema = schemaJson;
+  }
+  # The ISOs install with `disko-install --disk <diskName> <device>`: without a
+  # diskName there is no ISO to build.
+  // lib.optionalAttrs (diskName != null) {
     installerIso = guardRequiredAssets unattendedIsoSystem.config.system.build.isoImage;
   }
   # Per-root FLAT schema packages: `settingsSchema-<root>` (e.g. what
@@ -855,7 +920,7 @@ assert lib.assertMsg (hostRepo == null) ''
     }) resolvedRoots
   )
   # Guided (generic template) ISO — omitted entirely when `guided = false`.
-  // lib.optionalAttrs guided {
+  // lib.optionalAttrs (guided && diskName != null) {
     guidedIso =
       if guidedMissingDefaults != [ ] then
         throw ''
@@ -880,69 +945,81 @@ assert lib.assertMsg (hostRepo == null) ''
   # Heavy by nature: each one builds a real ISO and boots it. They are the only
   # place the offline claim is actually tested, so they are checks and not a
   # side package.
-  checks.${system} = {
-    offline-install-unattended = mkOfflineTest {
-      name = "offline-install-unattended";
-      isoSystem = unattendedIsoSystem;
-      installScript = "${frameworkSelf}/scripts/unattended-install.sh";
-      # The unattended ISO installs to the device baked into its manifest, so
-      # the emulated disk has to BE that device — right down to the bus, since
-      # /dev/sda and /dev/vda are different qemu hardware.
-      diskDevice = if resolvedDiskDevice != "" then resolvedDiskDevice else "/dev/vda";
-      # This script is already unattended; the flag only says there is nobody at
-      # the debug shell it drops to on failure, so a failure ends the test
-      # instead of waiting out its timeout.
-      scriptEnv.IH_NONINTERACTIVE = "1";
-    };
-  }
-  // lib.optionalAttrs (guided && guidedMissingDefaults == [ ]) {
-    offline-install-guided = mkOfflineTest {
-      name = "offline-install-guided";
-      isoSystem = guidedIsoSystem;
-      installScript = "${frameworkSelf}/scripts/guided-install.sh";
-      diskDevice = "/dev/vda";
-      answers = guidedAnswers;
-      # disko writes the chosen device into `diskoScript`, and a guided ISO by
-      # definition does not know it — so that one script is built on the box,
-      # from the trivial-builder deps offline-closure.nix ships for exactly this.
-      rebuildableOnTarget = [ "disko" ];
-      scriptEnv = {
-        IH_NONINTERACTIVE = "1";
-        IH_DISK_DEVICE = "/dev/vda";
-        IH_ANSWERS = "/tmp/ih-answers.json";
+  checks.${system} =
+    lib.optionalAttrs (diskName != null) {
+      offline-install-unattended = mkOfflineTest {
+        name = "offline-install-unattended";
+        isoSystem = unattendedIsoSystem;
+        installScript = "${frameworkSelf}/scripts/unattended-install.sh";
+        # The unattended ISO installs to the device baked into its manifest, so
+        # the emulated disk has to BE that device — right down to the bus, since
+        # /dev/sda and /dev/vda are different qemu hardware.
+        diskDevice = if resolvedDiskDevice != "" then resolvedDiskDevice else "/dev/vda";
+        # This script is already unattended; the flag only says there is nobody at
+        # the debug shell it drops to on failure, so a failure ends the test
+        # instead of waiting out its timeout.
+        scriptEnv.IH_NONINTERACTIVE = "1";
+      };
+    }
+    // lib.optionalAttrs (guided && diskName != null && guidedMissingDefaults == [ ]) {
+      offline-install-guided = mkOfflineTest {
+        name = "offline-install-guided";
+        isoSystem = guidedIsoSystem;
+        installScript = "${frameworkSelf}/scripts/guided-install.sh";
+        diskDevice = "/dev/vda";
+        answers = guidedAnswers;
+        # disko writes the chosen device into `diskoScript`, and a guided ISO by
+        # definition does not know it — so that one script is built on the box,
+        # from the trivial-builder deps offline-closure.nix ships for exactly this.
+        rebuildableOnTarget = [ "disko" ];
+        scriptEnv = {
+          IH_NONINTERACTIVE = "1";
+          IH_DISK_DEVICE = "/dev/vda";
+          IH_ANSWERS = "/tmp/ih-answers.json";
+        };
       };
     };
-  };
 
   apps.${system} = {
     # The single entrypoint: `nix run .#` / `nix run github:Owner/repo`.
-    default = mkApp "wizard" [
-      pkgs.age
-      pkgs.gum
-      pkgs.jq
-      pkgs.nix
-      pkgs.util-linux
-      pkgs.iproute2
-      nixosAnywhere.packages.${system}.default
-    ];
+    default = mkApp "wizard" (
+      agePlugins
+      ++ [
+        pkgs.age
+        pkgs.gum
+        pkgs.jq
+        pkgs.nix
+        pkgs.util-linux
+        pkgs.iproute2
+        nixosAnywhere.packages.${system}.default
+      ]
+    );
+    install = mkApp "install" (
+      agePlugins
+      ++ [
+        pkgs.age
+        pkgs.gum
+        pkgs.jq
+        pkgs.nix
+        pkgs.util-linux # lsblk for the USB-flash picker
+      ]
+    );
+    deploy = mkApp "deploy" (
+      agePlugins
+      ++ [
+        pkgs.age
+        pkgs.gum
+        pkgs.jq
+        nixosAnywhere.packages.${system}.default
+      ]
+    );
+  }
+  // lib.optionalAttrs questionnaire {
     configure = mkApp "configure" [
       pkgs.gum
       pkgs.jq
       pkgs.util-linux
       pkgs.iproute2
-    ];
-    install = mkApp "install" [
-      pkgs.age
-      pkgs.gum
-      pkgs.jq
-      pkgs.nix
-      pkgs.util-linux # lsblk for the USB-flash picker
-    ];
-    deploy = mkApp "deploy" [
-      pkgs.age
-      pkgs.gum
-      pkgs.jq
-      nixosAnywhere.packages.${system}.default
     ];
   }
   // lib.optionalAttrs (bootstrap != null) {
