@@ -11,3 +11,17 @@ updates:
     groups:
       nix:
         patterns: ["*"]
+
+  # Workflow actions in the host-repo template (copied into host repositories)
+  - package-ecosystem: github-actions
+    directory: /templates/host-repo
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    labels: [dependencies]
+    commit-message:
+      prefix: chore
+    groups:
+      actions:
+        patterns: ["*"]
